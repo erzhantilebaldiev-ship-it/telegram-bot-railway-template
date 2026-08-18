@@ -18,10 +18,6 @@ from db import Storage
 
 router = Router(name="meetups")
 
-# ============================================================
-# НАСТРОЙКИ
-# ============================================================
-
 OWNER_ID = 8494221732
 
 
@@ -255,7 +251,9 @@ async def cmd_help(
 # РЕГИСТРАЦИЯ ПОСТОЯННОЙ ГРУППЫ
 # ============================================================
 
-@router.message(Command("register_group"))
+@router.message(
+    F.text.regexp(r"^/register_group(?:@\w+)?(?:\s+.*)?$")
+)
 async def register_group(
     message: Message,
     db: Storage,
@@ -755,7 +753,6 @@ async def meetup_description(
     if user is None:
         return
 
-    # Проверяем свободную постоянную группу
     group = await db.get_free_group()
 
     if not group:
@@ -764,7 +761,8 @@ async def meetup_description(
         await message.answer(
             "❌ Сейчас нет свободной группы "
             "для новой сходки.\n\n"
-            "Попробуй позже.",
+            "Сначала зарегистрируй постоянную "
+            "группу через /register_group.",
             reply_markup=main_menu(),
         )
         return
@@ -803,7 +801,6 @@ async def meetup_description(
         )
         return
 
-    # Создатель становится участником
     await db.join_meetup(
         meetup_id,
         user.id,
