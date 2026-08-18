@@ -1,16 +1,3 @@
-"""Optional persistence layer.
-
-The bot works with or without a database:
-
-* ``DATABASE_URL`` set  -> ``PostgresStorage`` (asyncpg connection pool).
-* ``DATABASE_URL`` unset -> ``MemoryStorage`` (in-process dict, resets on deploy).
-
-Handlers only depend on the ``Storage`` protocol, so you can swap in Redis,
-SQLite, or an ORM without touching handler code. To remove persistence
-entirely, delete this file, the ``db=`` wiring in ``main.py``, and the
-``db`` parameters in ``handlers.py``.
-"""
-
 from __future__ import annotations
 
 import logging
@@ -22,51 +9,95 @@ logger = logging.getLogger(__name__)
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS bot_users (
-    user_id    BIGINT PRIMARY KEY,
-    username   TEXT,
+    user_id BIGINT PRIMARY KEY,
+    username TEXT,
     first_seen TIMESTAMPTZ NOT NULL DEFAULT now(),
-    last_seen  TIMESTAMPTZ NOT NULL DEFAULT now()
+    last_seen TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS profiles (
+    user_id BIGINT PRIMARY KEY REFERENCES bot_users(user_id) ON DELETE CASCADE,
+    name TEXT NOT NULL,
+    age INTEGER NOT NULL,
+    city TEXT NOT NULL,
+    gender TEXT NOT NULL,
+    looking_for TEXT NOT NULL,
+    photo_file_id TEXT,
+    bio TEXT NOT NULL DEFAULT '',
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 """
 
 
 class Storage(Protocol):
-    """Minimal persistence interface used by the handlers."""
-
     async def open(self) -> None: ...
     async def close(self) -> None: ...
     async def track_user(self, user_id: int, username: str | None) -> None: ...
+    async def save_profile(
+        self,
+        user_id: int,
+        name: str,
+        age: int,
+        city: str,
+        gender: str,
+        looking_for: str,
+        photo_file_id: str | None,
+        bio: str,
+    ) -> None: ...
+    async def get_profile(self, user_id: int): ...
     async def user_count(self) -> int: ...
     @property
     def backend(self) -> str: ...
 
 
 class MemoryStorage:
-    """No-op fallback so the template runs without a database attached."""
-
     def __init__(self) -> None:
-        self._users: dict[int, str | None] = {}
+        self._users = {}
+        self._profiles = {}
 
     @property
     def backend(self) -> str:
-        return "memory (no DATABASE_URL set — data resets on restart)"
+        return "memory"
 
     async def open(self) -> None:
         logger.info("storage.open backend=memory")
 
-    async def close(self) -> None:  # Nothing to release.
+    async def close(self) -> None:
         return None
 
     async def track_user(self, user_id: int, username: str | None) -> None:
         self._users[user_id] = username
+
+    async def save_profile(
+        self,
+        user_id: int,
+        name: str,
+        age: int,
+        city: str,
+        gender: str,
+        looking_for: str,
+        photo_file_id: str | None,
+        bio: str,
+    ) -> None:
+        self._profiles[user_id] = {
+            "name": name,
+            "age": age,
+            "city": city,
+            "gender": gender,
+            "looking_for": looking_for,
+            "photo_file_id": photo_file_id,
+            "bio": bio,
+        }
+
+    async def get_profile(self, user_id: int):
+        return self._profiles.get(user_id)
 
     async def user_count(self) -> int:
         return len(self._users)
 
 
 class PostgresStorage:
-    """asyncpg-backed storage. Works over Railway's IPv6 private network."""
-
     def __init__(self, dsn: str) -> None:
         self._dsn = dsn
         self._pool: asyncpg.Pool | None = None
@@ -76,10 +107,15 @@ class PostgresStorage:
         return "postgres"
 
     async def open(self) -> None:
-        # Small pool: a webhook bot rarely needs more than a few connections.
-        self._pool = await asyncpg.create_pool(self._dsn, min_size=1, max_size=5)
+        self._pool = await asyncpg.create_pool(
+            self._dsn,
+            min_size=1,
+            max_size=5,
+        )
+
         async with self._pool.acquire() as conn:
             await conn.execute(_SCHEMA)
+
         logger.info("storage.open backend=postgres")
 
     async def close(self) -> None:
@@ -87,24 +123,82 @@ class PostgresStorage:
             await self._pool.close()
 
     async def track_user(self, user_id: int, username: str | None) -> None:
-        assert self._pool is not None, "PostgresStorage used before open()"
+        assert self._pool is not None
+
         await self._pool.execute(
             """
-            INSERT INTO bot_users (user_id, username) VALUES ($1, $2)
+            INSERT INTO bot_users (user_id, username)
+            VALUES ($1, $2)
             ON CONFLICT (user_id)
-            DO UPDATE SET username = EXCLUDED.username, last_seen = now()
+            DO UPDATE SET
+                username = EXCLUDED.username,
+                last_seen = now()
             """,
             user_id,
             username,
         )
 
+    async def save_profile(
+        self,
+        user_id: int,
+        name: str,
+        age: int,
+        city: str,
+        gender: str,
+        looking_for: str,
+        photo_file_id: str | None,
+        bio: str,
+    ) -> None:
+        assert self._pool is not None
+
+        await self._pool.execute(
+            """
+            INSERT INTO profiles
+            (user_id, name, age, city, gender, looking_for, photo_file_id, bio)
+            VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+            ON CONFLICT (user_id)
+            DO UPDATE SET
+                name = EXCLUDED.name,
+                age = EXCLUDED.age,
+                city = EXCLUDED.city,
+                gender = EXCLUDED.gender,
+                looking_for = EXCLUDED.looking_for,
+                photo_file_id = EXCLUDED.photo_file_id,
+                bio = EXCLUDED.bio,
+                updated_at = now()
+            """,
+            user_id,
+            name,
+            age,
+            city,
+            gender,
+            looking_for,
+            photo_file_id,
+            bio,
+        )
+
+    async def get_profile(self, user_id: int):
+        assert self._pool is not None
+
+        return await self._pool.fetchrow(
+            """
+            SELECT name, age, city, gender,
+                   looking_for, photo_file_id, bio
+            FROM profiles
+            WHERE user_id = $1
+            """,
+            user_id,
+        )
+
     async def user_count(self) -> int:
-        assert self._pool is not None, "PostgresStorage used before open()"
-        return await self._pool.fetchval("SELECT count(*) FROM bot_users")
+        assert self._pool is not None
+        return await self._pool.fetchval(
+            "SELECT count(*) FROM bot_users"
+        )
 
 
 def create_storage(database_url: str | None) -> Storage:
-    """Pick the storage backend based on configuration."""
     if database_url:
         return PostgresStorage(database_url)
+
     return MemoryStorage()
