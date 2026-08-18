@@ -1,27 +1,25 @@
-"""Update handlers. Add your own commands here — see README "Extending the bot".
-
-The ``db: Storage`` argument is injected by aiogram's dependency injection:
-``main.py`` puts the storage into the dispatcher's workflow data under the
-key ``db``, and any handler that declares a parameter with that name gets it.
-"""
-
 from __future__ import annotations
 
 from aiogram import F, Router, html
 from aiogram.filters import Command, CommandStart
-from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import State, StatesGroup
+from aiogram.types import (
+    CallbackQuery,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    Message,
+)
 
 from db import Storage
 
-router = Router(name="starter")
 
-HELP_TEXT = (
-    "<b>Commands</b>\n"
-    "/start — welcome message and menu\n"
-    "/help — this message\n\n"
-    "Anything else you send is echoed back. "
-    "Fork the repo and edit <code>handlers.py</code> to make it yours."
-)
+router = Router(name="dating")
+
+
+class ProfileStates(StatesGroup):
+    waiting_name = State()
+    waiting_age = State()
 
 
 def main_menu() -> InlineKeyboardMarkup:
@@ -42,6 +40,7 @@ def main_menu() -> InlineKeyboardMarkup:
         ]
     )
 
+
 @router.message(CommandStart())
 async def cmd_start(message: Message, db: Storage) -> None:
     user = message.from_user
@@ -50,44 +49,97 @@ async def cmd_start(message: Message, db: Storage) -> None:
         await db.track_user(user.id, user.username)
 
     await message.answer(
-        "❤️ Добро пожаловать в Dating Bot!\n\n"
-        "Здесь ты можешь познакомиться с интересными людьми.",
+        "❤️ <b>Добро пожаловать в Dating Bot!</b>\n\n"
+        "Здесь ты можешь познакомиться с интересными людьми.\n\n"
+        "Сначала создай свою анкету 👇",
         reply_markup=main_menu(),
     )
 
 
-@router.message(Command("help"))
-async def cmd_help(message: Message) -> None:
-    """/help — list available commands."""
-    await message.answer(HELP_TEXT)
-
-
-@router.callback_query(F.data == "menu:help")
-async def cb_help(callback: CallbackQuery) -> None:
-    """Inline 'Help' button — same text as /help, sent as a new message."""
-    if isinstance(callback.message, Message):
-        await callback.message.answer(HELP_TEXT)
-    await callback.answer()  # Always answer, or the button spinner hangs.
-
-
-@router.callback_query(F.data == "menu:stats")
-async def cb_stats(callback: CallbackQuery, db: Storage) -> None:
-    """Inline 'Stats' button — demonstrates reading from the storage layer."""
-    count = await db.user_count()
-    await callback.answer(f"{count} user(s) have started this bot.", show_alert=True)
-
-
-@router.message(F.text)
-async def echo(message: Message, db: Storage) -> None:
-    """Fallback: echo any plain-text message. Replace with your own logic."""
-    user = message.from_user
-    if user is not None:
-        await db.track_user(user.id, user.username)
-    await message.answer(f"You said: {html.quote(message.text or '')}")
 @router.callback_query(F.data == "profile:create")
-async def create_profile(callback: CallbackQuery) -> None:
+async def create_profile(
+    callback: CallbackQuery,
+    state: FSMContext,
+) -> None:
     await callback.answer()
+
+    await state.set_state(ProfileStates.waiting_name)
+
     await callback.message.answer(
-        "👤 Давай создадим твою анкету!\n\n"
+        "👤 <b>Создаём твою анкету</b>\n\n"
         "Как тебя зовут?"
+    )
+
+
+@router.message(ProfileStates.waiting_name)
+async def profile_name(
+    message: Message,
+    state: FSMContext,
+) -> None:
+    name = (message.text or "").strip()
+
+    if not name:
+        await message.answer("Пожалуйста, напиши своё имя 🙂")
+        return
+
+    if len(name) > 30:
+        await message.answer("Имя слишком длинное. Напиши короче 🙂")
+        return
+
+    await state.update_data(name=name)
+    await state.set_state(ProfileStates.waiting_age)
+
+    await message.answer(
+        f"Приятно познакомиться, <b>{html.quote(name)}</b>! 👋\n\n"
+        "🎂 Сколько тебе лет?"
+    )
+
+
+@router.message(ProfileStates.waiting_age)
+async def profile_age(
+    message: Message,
+    state: FSMContext,
+) -> None:
+    text = (message.text or "").strip()
+
+    if not text.isdigit():
+        await message.answer(
+            "Напиши возраст цифрами, например: <b>22</b>"
+        )
+        return
+
+    age = int(text)
+
+    if age < 18:
+        await message.answer(
+            "Извини, этот бот предназначен для пользователей от 18 лет."
+        )
+        return
+
+    if age > 100:
+        await message.answer(
+            "Проверь возраст и введи корректное число 🙂"
+        )
+        return
+
+    data = await state.get_data()
+    name = data.get("name", "Пользователь")
+
+    await state.clear()
+
+    await message.answer(
+        f"Отлично, <b>{html.quote(name)}</b>! 🎉\n\n"
+        f"Тебе {age} лет.\n\n"
+        "Следующий этап анкеты добавим дальше."
+    )
+
+
+@router.callback_query(F.data == "profile:me")
+async def my_profile(callback: CallbackQuery) -> None:
+    await callback.answer()
+
+    await callback.message.answer(
+        "👤 <b>Моя анкета</b>\n\n"
+        "Ты ещё не создал анкету.\n"
+        "Нажми «❤️ Создать анкету»."
     )
