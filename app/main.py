@@ -1,12 +1,4 @@
-“”“Entrypoint: aiohttp web server + aiogram webhook bot.
-
-Webhook:
-Telegram -> /telegram/webhook
-
-Также работает фоновая задача:
-каждые 60 секунд проверяет сходки
-и закрывает те, которым исполнилось 24 часа.
-“””
+“”“Entrypoint: aiohttp web server + aiogram webhook bot.”””
 
 from future import annotations
 
@@ -86,10 +78,13 @@ async def meetup_cleanup_loop(
 storage: Storage,
 ) -> None:
 “””
-Проверяет завершённые сходки раз в минуту.
+Автоматически проверяет сходки.
 
-Если с момента начала сходки прошло 24 часа:
-- все участники кроме создателя удаляются;
+Каждые 60 секунд проверяет:
+прошло ли 24 часа с момента начала сходки.
+Если прошло:
+- участники удаляются;
+- создатель остаётся;
 - сходка становится неактивной.
 """
 while True:
@@ -131,17 +126,17 @@ dispatcher.include_router(
 storage = create_storage(
     config.database_url
 )
-# Передаём storage в handlers.py.
+# Storage доступен в handlers.py
+# через параметр db.
 dispatcher["db"] = storage
-# Ссылка на фоновую задачу.
 cleanup_task: asyncio.Task | None = None
 async def on_startup(
     bot: Bot,
 ) -> None:
     nonlocal cleanup_task
-    # Открываем базу.
+    # Открываем базу данных.
     await storage.open()
-    # Запускаем автоматическую очистку.
+    # Запускаем автоматическую очистку сходок.
     cleanup_task = asyncio.create_task(
         meetup_cleanup_loop(
             storage
@@ -150,7 +145,7 @@ async def on_startup(
     logger.info(
         "meetup cleanup task started"
     )
-    # Регистрируем webhook.
+    # Регистрируем Telegram webhook.
     await bot.set_webhook(
         url=config.webhook_url,
         secret_token=config.webhook_secret,
@@ -173,7 +168,7 @@ async def on_shutdown(
     bot: Bot,
 ) -> None:
     nonlocal cleanup_task
-    # Останавливаем фоновую задачу.
+    # Останавливаем очистку.
     if cleanup_task is not None:
         cleanup_task.cancel()
         try:
@@ -199,6 +194,7 @@ dispatcher.shutdown.register(
 )
 app = web.Application()
 app["db"] = storage
+# Railway healthcheck.
 app.router.add_get(
     "/healthz",
     healthz,
@@ -212,8 +208,8 @@ SimpleRequestHandler(
     app,
     path=config.webhook_path,
 )
-# Связываем lifecycle aiohttp
-# с lifecycle aiogram.
+# Подключаем lifecycle aiogram
+# к aiohttp.
 setup_application(
     app,
     dispatcher,
