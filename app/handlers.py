@@ -84,3 +84,10 @@ async def echo(message: Message, db: Storage) -> None:
     if user is not None:
         await db.track_user(user.id, user.username)
     await message.answer(f"You said: {html.quote(message.text or '')}")
+@router.callback_query(F.data == "profile:create")
+async def create_profile(callback: CallbackQuery) -> None:
+    await callback.answer()
+    await callback.message.answer(
+        "👤 Давай создадим твою анкету!\n\n"
+        "Как тебя зовут?"
+    )
