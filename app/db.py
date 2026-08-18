@@ -44,11 +44,26 @@ CREATE TABLE IF NOT EXISTS blocked_users (
     PRIMARY KEY (user_id, blocked_id)
 );
 
+CREATE TABLE IF NOT EXISTS dating_filters (
+    user_id BIGINT PRIMARY KEY REFERENCES bot_users(user_id) ON DELETE CASCADE,
+    min_age INTEGER NOT NULL DEFAULT 18,
+    max_age INTEGER NOT NULL DEFAULT 100,
+    city TEXT,
+    gender TEXT NOT NULL DEFAULT 'Неважно',
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
 CREATE INDEX IF NOT EXISTS idx_swipes_user
 ON swipes(user_id);
 
 CREATE INDEX IF NOT EXISTS idx_swipes_target
 ON swipes(target_id);
+
+CREATE INDEX IF NOT EXISTS idx_profiles_age
+ON profiles(age);
+
+CREATE INDEX IF NOT EXISTS idx_profiles_city
+ON profiles(city);
 """
 
 
@@ -106,6 +121,25 @@ class Storage(Protocol):
         blocked_id: int,
     ) -> None: ...
 
+    async def save_filters(
+        self,
+        user_id: int,
+        min_age: int,
+        max_age: int,
+        city: str | None,
+        gender: str,
+    ) -> None: ...
+
+    async def get_filters(
+        self,
+        user_id: int,
+    ): ...
+
+    async def reset_filters(
+        self,
+        user_id: int,
+    ) -> None: ...
+
     async def user_count(self) -> int: ...
 
     @property
@@ -117,7 +151,9 @@ class MemoryStorage:
         self._users: dict[int, str | None] = {}
         self._profiles: dict[int, dict] = {}
         self._swipes: dict[tuple[int, int], str] = {}
-        self._blocked: set[tuple[int, int]] = set()
+        self._blocked: set[tuple[int, int]] = {}
+
+        self._filters: dict[int, dict] = {}
 
     @property
     def backend(self) -> str:
@@ -161,13 +197,50 @@ class MemoryStorage:
     async def get_profile(self, user_id: int):
         return self._profiles.get(user_id)
 
+    async def save_filters(
+        self,
+        user_id: int,
+        min_age: int,
+        max_age: int,
+        city: str | None,
+        gender: str,
+    ) -> None:
+        self._filters[user_id] = {
+            "user_id": user_id,
+            "min_age": min_age,
+            "max_age": max_age,
+            "city": city,
+            "gender": gender,
+        }
+
+    async def get_filters(self, user_id: int):
+        return self._filters.get(
+            user_id,
+            {
+                "user_id": user_id,
+                "min_age": 18,
+                "max_age": 100,
+                "city": None,
+                "gender": "Неважно",
+            },
+        )
+
+    async def reset_filters(
+        self,
+        user_id: int,
+    ) -> None:
+        self._filters.pop(user_id, None)
+
     async def get_next_profile(self, user_id: int):
         me = self._profiles.get(user_id)
 
         if not me:
             return None
 
+        filters = await self.get_filters(user_id)
+
         for target_id, profile in self._profiles.items():
+
             if target_id == user_id:
                 continue
 
@@ -180,23 +253,47 @@ class MemoryStorage:
             if (user_id, target_id) in self._swipes:
                 continue
 
-            if (
-                profile["looking_for"] != "Неважно"
-                and profile["looking_for"] != me["gender"]
-                and not (
-                    profile["looking_for"] == "Парней"
-                    and me["gender"] == "Парень"
-                )
-                and not (
-                    profile["looking_for"] == "Девушек"
-                    and me["gender"] == "Девушка"
-                )
+            if not (
+                filters["min_age"]
+                <= profile["age"]
+                <= filters["max_age"]
             ):
+                continue
+
+            if filters["city"]:
+                if profile["city"].lower() != filters["city"].lower():
+                    continue
+
+            if filters["gender"] != "Неважно":
+                if profile["gender"] != filters["gender"]:
+                    continue
+
+            if not self._is_compatible(me, profile):
                 continue
 
             return profile
 
         return None
+
+    @staticmethod
+    def _is_compatible(
+        me: dict,
+        profile: dict,
+    ) -> bool:
+
+        if (
+            profile["looking_for"] != "Неважно"
+            and profile["looking_for"] != me["gender"]
+        ):
+            return False
+
+        if (
+            me["looking_for"] != "Неважно"
+            and me["looking_for"] != profile["gender"]
+        ):
+            return False
+
+        return True
 
     async def swipe(
         self,
@@ -243,6 +340,14 @@ class MemoryStorage:
             for key, value in self._swipes.items()
             if user_id not in key
         }
+
+        self._blocked = {
+            pair
+            for pair in self._blocked
+            if user_id not in pair
+        }
+
+        self._filters.pop(user_id, None)
 
     async def block_user(
         self,
@@ -331,6 +436,7 @@ class PostgresStorage:
             )
             VALUES
             ($1,$2,$3,$4,$5,$6,$7,$8)
+
             ON CONFLICT (user_id)
             DO UPDATE SET
                 name = EXCLUDED.name,
@@ -367,11 +473,99 @@ class PostgresStorage:
             user_id,
         )
 
+    async def save_filters(
+        self,
+        user_id: int,
+        min_age: int,
+        max_age: int,
+        city: str | None,
+        gender: str,
+    ) -> None:
+        assert self._pool is not None
+
+        await self._pool.execute(
+            """
+            INSERT INTO dating_filters
+            (
+                user_id,
+                min_age,
+                max_age,
+                city,
+                gender
+            )
+            VALUES ($1,$2,$3,$4,$5)
+
+            ON CONFLICT (user_id)
+            DO UPDATE SET
+                min_age = EXCLUDED.min_age,
+                max_age = EXCLUDED.max_age,
+                city = EXCLUDED.city,
+                gender = EXCLUDED.gender,
+                updated_at = now()
+            """,
+            user_id,
+            min_age,
+            max_age,
+            city,
+            gender,
+        )
+
+    async def get_filters(
+        self,
+        user_id: int,
+    ):
+        assert self._pool is not None
+
+        result = await self._pool.fetchrow(
+            """
+            SELECT *
+            FROM dating_filters
+            WHERE user_id = $1
+            """,
+            user_id,
+        )
+
+        if result:
+            return result
+
+        await self.save_filters(
+            user_id=user_id,
+            min_age=18,
+            max_age=100,
+            city=None,
+            gender="Неважно",
+        )
+
+        return await self._pool.fetchrow(
+            """
+            SELECT *
+            FROM dating_filters
+            WHERE user_id = $1
+            """,
+            user_id,
+        )
+
+    async def reset_filters(
+        self,
+        user_id: int,
+    ) -> None:
+        assert self._pool is not None
+
+        await self._pool.execute(
+            """
+            DELETE FROM dating_filters
+            WHERE user_id = $1
+            """,
+            user_id,
+        )
+
     async def get_next_profile(
         self,
         user_id: int,
     ):
         assert self._pool is not None
+
+        filters = await self.get_filters(user_id)
 
         return await self._pool.fetchrow(
             """
@@ -379,7 +573,20 @@ class PostgresStorage:
             FROM profiles p
             JOIN profiles me
               ON me.user_id = $1
+
             WHERE p.user_id != $1
+
+              AND p.age BETWEEN $2 AND $3
+
+              AND (
+                  $4::TEXT IS NULL
+                  OR LOWER(p.city) = LOWER($4)
+              )
+
+              AND (
+                  $5 = 'Неважно'
+                  OR p.gender = $5
+              )
 
               AND NOT EXISTS (
                   SELECT 1
@@ -392,11 +599,15 @@ class PostgresStorage:
                   SELECT 1
                   FROM blocked_users b
                   WHERE
-                    (b.user_id = $1
-                     AND b.blocked_id = p.user_id)
+                    (
+                        b.user_id = $1
+                        AND b.blocked_id = p.user_id
+                    )
                     OR
-                    (b.user_id = p.user_id
-                     AND b.blocked_id = $1)
+                    (
+                        b.user_id = p.user_id
+                        AND b.blocked_id = $1
+                    )
               )
 
               AND (
@@ -431,6 +642,10 @@ class PostgresStorage:
             LIMIT 1
             """,
             user_id,
+            filters["min_age"],
+            filters["max_age"],
+            filters["city"],
+            filters["gender"],
         )
 
     async def swipe(
@@ -446,6 +661,7 @@ class PostgresStorage:
             INSERT INTO swipes
             (user_id, target_id, action)
             VALUES ($1,$2,$3)
+
             ON CONFLICT (user_id,target_id)
             DO UPDATE SET action = EXCLUDED.action
             """,
@@ -526,6 +742,23 @@ class PostgresStorage:
             DELETE FROM swipes
             WHERE user_id = $1
                OR target_id = $1
+            """,
+            user_id,
+        )
+
+        await self._pool.execute(
+            """
+            DELETE FROM blocked_users
+            WHERE user_id = $1
+               OR blocked_id = $1
+            """,
+            user_id,
+        )
+
+        await self._pool.execute(
+            """
+            DELETE FROM dating_filters
+            WHERE user_id = $1
             """,
             user_id,
         )
