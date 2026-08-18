@@ -43,15 +43,14 @@ def main_menu() -> InlineKeyboardMarkup:
 
 @router.message(CommandStart())
 async def cmd_start(message: Message, db: Storage) -> None:
-    """/start — greet the user, remember them, show the menu."""
     user = message.from_user
+
     if user is not None:
         await db.track_user(user.id, user.username)
-    name = html.quote(user.full_name) if user else "there"
+
     await message.answer(
-        f"👋 Hello, <b>{name}</b>!\n\n"
-        "I'm a webhook-powered starter bot running on Railway.\n"
-        "Pick an option below or just send me a message.",
+        "❤️ Добро пожаловать в Dating Bot!\n\n"
+        "Здесь ты можешь познакомиться с интересными людьми.",
         reply_markup=main_menu(),
     )
 
