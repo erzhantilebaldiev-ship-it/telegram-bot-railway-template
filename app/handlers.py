@@ -32,20 +32,32 @@ def main_menu() -> InlineKeyboardMarkup:
         inline_keyboard=[
             [
                 InlineKeyboardButton(
-                    text="🔎 Начать знакомства",
+                    text="🔎 Знакомства",
                     callback_data="dating:start",
                 )
             ],
             [
                 InlineKeyboardButton(
-                    text="❤️ Создать анкету",
-                    callback_data="profile:create",
+                    text="❤️ Мои симпатии",
+                    callback_data="likes:show",
                 )
             ],
             [
                 InlineKeyboardButton(
                     text="👤 Моя анкета",
                     callback_data="profile:me",
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="✏️ Редактировать анкету",
+                    callback_data="profile:edit",
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="🗑️ Удалить анкету",
+                    callback_data="profile:delete",
                 )
             ],
         ]
@@ -92,18 +104,26 @@ def looking_keyboard() -> InlineKeyboardMarkup:
     )
 
 
-def dating_keyboard() -> InlineKeyboardMarkup:
+def dating_keyboard(
+    target_id: int,
+) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
                 InlineKeyboardButton(
                     text="❤️ Нравится",
-                    callback_data="dating:like",
+                    callback_data=f"dating:like:{target_id}",
                 ),
                 InlineKeyboardButton(
                     text="❌ Пропустить",
-                    callback_data="dating:skip",
+                    callback_data=f"dating:skip:{target_id}",
                 ),
+            ],
+            [
+                InlineKeyboardButton(
+                    text="🚫 Заблокировать",
+                    callback_data=f"dating:block:{target_id}",
+                )
             ],
             [
                 InlineKeyboardButton(
@@ -135,27 +155,29 @@ async def send_next_profile(
 
     if not profile:
         await message.answer(
-            "😔 Пока нет новых анкет.\n\n"
-            "Попробуй зайти позже — как только появятся новые "
-            "пользователи, я их покажу.",
+            "😔 <b>Новых анкет пока нет.</b>\n\n"
+            "Попробуй зайти позже.",
             reply_markup=main_menu(),
         )
         return
 
     data = dict(profile)
-
     text = profile_text(data)
+
+    keyboard = dating_keyboard(
+        data["user_id"]
+    )
 
     if data.get("photo_file_id"):
         await message.answer_photo(
             photo=data["photo_file_id"],
             caption=text,
-            reply_markup=dating_keyboard(),
+            reply_markup=keyboard,
         )
     else:
         await message.answer(
             text,
-            reply_markup=dating_keyboard(),
+            reply_markup=keyboard,
         )
 
 
@@ -173,27 +195,36 @@ async def cmd_start(
         )
 
     await message.answer(
-        "❤️ <b>Добро пожаловать в Dating Bot!</b>\n\n"
-        "Здесь можно знакомиться, ставить лайки "
-        "и находить взаимную симпатию.\n\n"
-        "Сначала создай анкету 👇",
+        "❤️ <b>Добро пожаловать!</b>\n\n"
+        "Здесь можно знакомиться, "
+        "ставить лайки и находить взаимную симпатию.\n\n"
+        "Выбери действие:",
         reply_markup=main_menu(),
     )
 
 
 @router.message(Command("help"))
-async def cmd_help(message: Message) -> None:
+async def cmd_help(
+    message: Message,
+) -> None:
     await message.answer(
-        "ℹ️ <b>Помощь</b>\n\n"
-        "❤️ Создай анкету.\n"
-        "🔎 Начни знакомства.\n"
-        "❤️ Ставь лайки понравившимся людям.\n"
-        "❌ Пропускай анкеты.\n\n"
-        "При взаимном лайке бот сообщит вам обоим."
+        "ℹ️ <b>Как пользоваться ботом</b>\n\n"
+        "👤 Создай анкету.\n"
+        "🔎 Смотри анкеты других пользователей.\n"
+        "❤️ Ставь лайки.\n"
+        "❌ Пропускай.\n"
+        "💕 При взаимном лайке вы узнаете друг о друге.\n"
+        "💬 После взаимной симпатии можно написать человеку."
     )
 
 
-@router.callback_query(F.data == "profile:create")
+# =========================
+# СОЗДАНИЕ АНКЕТЫ
+# =========================
+
+@router.callback_query(
+    F.data == "profile:create"
+)
 async def create_profile(
     callback: CallbackQuery,
     state: FSMContext,
@@ -204,8 +235,38 @@ async def create_profile(
     await state.set_state(ProfileStates.name)
 
     await callback.message.answer(
-        "❤️ <b>Создаём твою анкету</b>\n\n"
+        "❤️ <b>Создаём анкету</b>\n\n"
         "👤 Как тебя зовут?"
+    )
+
+
+@router.callback_query(
+    F.data == "profile:edit"
+)
+async def edit_profile(
+    callback: CallbackQuery,
+    state: FSMContext,
+    db: Storage,
+) -> None:
+    await callback.answer()
+
+    profile = await db.get_profile(
+        callback.from_user.id
+    )
+
+    if not profile:
+        await callback.message.answer(
+            "👤 У тебя ещё нет анкеты.",
+            reply_markup=main_menu(),
+        )
+        return
+
+    await state.clear()
+    await state.set_state(ProfileStates.name)
+
+    await callback.message.answer(
+        "✏️ <b>Редактирование анкеты</b>\n\n"
+        "👤 Введи новое имя:"
     )
 
 
@@ -218,7 +279,7 @@ async def profile_name(
 
     if not name:
         await message.answer(
-            "Напиши своё имя 🙂"
+            "Напиши имя 🙂"
         )
         return
 
@@ -232,8 +293,7 @@ async def profile_name(
     await state.set_state(ProfileStates.age)
 
     await message.answer(
-        f"Приятно познакомиться, "
-        f"<b>{html.quote(name)}</b>! 👋\n\n"
+        f"👋 <b>{html.quote(name)}</b>\n\n"
         "🎂 Сколько тебе лет?"
     )
 
@@ -247,7 +307,7 @@ async def profile_age(
 
     if not text.isdigit():
         await message.answer(
-            "🎂 Напиши возраст цифрами.\n\n"
+            "🎂 Напиши возраст цифрами.\n"
             "Например: <b>22</b>"
         )
         return
@@ -263,7 +323,7 @@ async def profile_age(
 
     if age > 100:
         await message.answer(
-            "Проверь возраст и попробуй ещё раз."
+            "Проверь возраст."
         )
         return
 
@@ -284,7 +344,7 @@ async def profile_city(
 
     if not city:
         await message.answer(
-            "Напиши название города."
+            "Напиши город."
         )
         return
 
@@ -312,7 +372,9 @@ async def profile_gender(
         "gender:female": "Девушка",
     }
 
-    gender = gender_map.get(callback.data)
+    gender = gender_map.get(
+        callback.data
+    )
 
     if not gender:
         return
@@ -326,7 +388,7 @@ async def profile_gender(
     )
 
     await callback.message.answer(
-        "❤️ Кого ты хочешь найти?",
+        "❤️ Кого хочешь найти?",
         reply_markup=looking_keyboard(),
     )
 
@@ -363,14 +425,13 @@ async def profile_looking(
     )
 
     await callback.message.answer(
-        "📸 Теперь отправь своё фото.\n\n"
-        "Желательно фото, где хорошо видно лицо."
+        "📸 Отправь своё фото."
     )
 
 
 @router.message(
     ProfileStates.photo,
-    F.photo
+    F.photo,
 )
 async def profile_photo(
     message: Message,
@@ -388,9 +449,7 @@ async def profile_photo(
 
     await message.answer(
         "🔥 Фото получил!\n\n"
-        "✍️ Теперь расскажи немного о себе.\n\n"
-        "Например: чем занимаешься, "
-        "что любишь, какой у тебя характер."
+        "📝 Расскажи немного о себе."
     )
 
 
@@ -413,13 +472,12 @@ async def profile_bio(
 
     if not bio:
         await message.answer(
-            "Напиши пару слов о себе 🙂"
+            "Напиши пару слов о себе."
         )
         return
 
     if len(bio) > 500:
         await message.answer(
-            "Описание слишком длинное. "
             "Максимум 500 символов."
         )
         return
@@ -447,11 +505,14 @@ async def profile_bio(
     await state.clear()
 
     await message.answer(
-        "🎉 <b>Анкета готова!</b>\n\n"
-        "Теперь можно начинать знакомства.",
+        "🎉 <b>Анкета сохранена!</b>",
         reply_markup=main_menu(),
     )
 
+
+# =========================
+# МОЯ АНКЕТА
+# =========================
 
 @router.callback_query(
     F.data == "profile:me"
@@ -468,13 +529,12 @@ async def my_profile(
 
     if not profile:
         await callback.message.answer(
-            "👤 У тебя пока нет анкеты.\n\n"
-            "Нажми ❤️ «Создать анкету»."
+            "👤 У тебя пока нет анкеты.",
+            reply_markup=main_menu(),
         )
         return
 
     data = dict(profile)
-
     text = profile_text(data)
 
     if data.get("photo_file_id"):
@@ -489,6 +549,78 @@ async def my_profile(
             reply_markup=main_menu(),
         )
 
+
+# =========================
+# УДАЛЕНИЕ АНКЕТЫ
+# =========================
+
+@router.callback_query(
+    F.data == "profile:delete"
+)
+async def delete_profile_confirm(
+    callback: CallbackQuery,
+) -> None:
+    await callback.answer()
+
+    keyboard = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="🗑️ Да, удалить",
+                    callback_data="profile:delete_yes",
+                ),
+                InlineKeyboardButton(
+                    text="❌ Отмена",
+                    callback_data="profile:delete_no",
+                ),
+            ]
+        ]
+    )
+
+    await callback.message.answer(
+        "⚠️ <b>Удалить анкету?</b>\n\n"
+        "Анкета и история лайков будут удалены.",
+        reply_markup=keyboard,
+    )
+
+
+@router.callback_query(
+    F.data == "profile:delete_no"
+)
+async def delete_profile_no(
+    callback: CallbackQuery,
+) -> None:
+    await callback.answer()
+
+    await callback.message.answer(
+        "👌 Хорошо.",
+        reply_markup=main_menu(),
+    )
+
+
+@router.callback_query(
+    F.data == "profile:delete_yes"
+)
+async def delete_profile_yes(
+    callback: CallbackQuery,
+    db: Storage,
+) -> None:
+    await callback.answer()
+
+    await db.delete_profile(
+        callback.from_user.id
+    )
+
+    await callback.message.answer(
+        "🗑️ <b>Анкета удалена.</b>\n\n"
+        "Если захочешь — можешь создать новую.",
+        reply_markup=main_menu(),
+    )
+
+
+# =========================
+# ЗНАКОМСТВА
+# =========================
 
 @router.callback_query(
     F.data == "dating:start"
@@ -505,14 +637,13 @@ async def dating_start(
 
     if not profile:
         await callback.message.answer(
-            "👤 Сначала создай свою анкету.",
+            "👤 Сначала создай анкету.",
             reply_markup=main_menu(),
         )
         return
 
     await callback.message.answer(
-        "🔎 <b>Начинаем знакомства!</b>\n\n"
-        "Вот анкета первого человека:"
+        "🔎 <b>Начинаем знакомства!</b>"
     )
 
     await send_next_profile(
@@ -523,36 +654,55 @@ async def dating_start(
 
 
 @router.callback_query(
-    F.data.in_(["dating:like", "dating:skip"])
+    F.data.startswith("dating:")
 )
 async def dating_action(
     callback: CallbackQuery,
     db: Storage,
 ) -> None:
-    action = (
-        "like"
-        if callback.data == "dating:like"
-        else "skip"
-    )
+    parts = callback.data.split(":")
 
-    await callback.answer()
-
-    user_id = callback.from_user.id
-
-    profile = await db.get_next_profile(
-        user_id
-    )
-
-    if not profile:
-        await callback.message.answer(
-            "Анкета уже закончилась.\n"
-            "Нажми 🔎 «Начать знакомства», "
-            "чтобы продолжить.",
-            reply_markup=main_menu(),
+    if len(parts) != 3:
+        await callback.answer(
+            "Ошибка.",
+            show_alert=True,
         )
         return
 
-    target_id = profile["user_id"]
+    action = parts[1]
+
+    try:
+        target_id = int(parts[2])
+    except ValueError:
+        await callback.answer(
+            "Ошибка анкеты.",
+            show_alert=True,
+        )
+        return
+
+    user_id = callback.from_user.id
+
+    await callback.answer()
+
+    if action == "block":
+        await db.block_user(
+            user_id,
+            target_id,
+        )
+
+        await callback.message.answer(
+            "🚫 Пользователь заблокирован."
+        )
+
+        await send_next_profile(
+            callback.message,
+            user_id,
+            db,
+        )
+        return
+
+    if action not in ("like", "skip"):
+        return
 
     mutual = await db.swipe(
         user_id=user_id,
@@ -560,56 +710,179 @@ async def dating_action(
         action=action,
     )
 
-    if action == "like":
-        if mutual:
-            target_username = (
-                await db.get_username(
-                    target_id
-                )
+    if action == "skip":
+        await callback.message.answer(
+            "❌ Пропущено."
+        )
+
+    elif mutual:
+        target_username = (
+            await db.get_username(
+                target_id
+            )
+        )
+
+        user_username = (
+            await db.get_username(
+                user_id
+            )
+        )
+
+        buttons = []
+
+        if target_username:
+            buttons.append(
+                [
+                    InlineKeyboardButton(
+                        text="💬 Написать",
+                        url=f"https://t.me/{target_username}",
+                    )
+                ]
             )
 
-            user_username = (
+        keyboard = (
+            InlineKeyboardMarkup(
+                inline_keyboard=buttons
+            )
+            if buttons
+            else None
+        )
+
+        await callback.message.answer(
+            "💕 <b>ВЗАИМНАЯ СИМПАТИЯ!</b>\n\n"
+            "Вы понравились друг другу! 🎉\n\n"
+            "Теперь можете начать общение.",
+            reply_markup=keyboard,
+        )
+
+        try:
+            if user_username:
+                await callback.bot.send_message(
+                    target_id,
+                    "💕 <b>Взаимная симпатия!</b>\n\n"
+                    f"@{html.quote(user_username)} "
+                    "тоже поставил(а) тебе лайк! ❤️",
+                )
+            else:
+                await callback.bot.send_message(
+                    target_id,
+                    "💕 <b>Взаимная симпатия!</b>\n\n"
+                    "Вы понравились друг другу! ❤️",
+                )
+        except Exception:
+            pass
+
+    else:
+        await callback.message.answer(
+            "❤️ <b>Лайк поставлен!</b>\n\n"
+            "Если человек тоже поставит тебе лайк — "
+            "я сообщу о взаимной симпатии."
+        )
+
+        try:
+            sender_username = (
                 await db.get_username(
                     user_id
                 )
             )
 
-            await callback.message.answer(
-                "💕 <b>Взаимная симпатия!</b>\n\n"
-                "Вы понравились друг другу! 🎉"
-            )
-
-            if target_username:
-                await callback.message.answer(
-                    f"Связаться: @{html.quote(target_username)}"
+            if sender_username:
+                text = (
+                    "❤️ <b>Тебе поставили лайк!</b>\n\n"
+                    f"@{html.quote(sender_username)} "
+                    "заинтересовался твоей анкетой. 🔥"
+                )
+            else:
+                text = (
+                    "❤️ <b>Тебе поставили лайк!</b>\n\n"
+                    "Кто-то заинтересовался твоей анкетой. 🔥"
                 )
 
-            # Сообщение второму пользователю
-            if target_username:
-                try:
-                    await callback.bot.send_message(
-                        target_id,
-                        "💕 <b>У вас взаимная симпатия!</b>\n\n"
-                        f"Можете написать друг другу: "
-                        f"@{html.quote(user_username or '')}"
-                    )
-                except Exception:
-                    pass
-        else:
-            await callback.message.answer(
-                "❤️ Лайк поставлен!"
+            await callback.bot.send_message(
+                target_id,
+                text,
             )
 
-    else:
-        await callback.message.answer(
-            "❌ Пропускаем."
-        )
+        except Exception:
+            pass
 
     await send_next_profile(
         callback.message,
         user_id,
         db,
     )
+
+
+# =========================
+# МОИ СИМПАТИИ
+# =========================
+
+@router.callback_query(
+    F.data == "likes:show"
+)
+async def show_likes(
+    callback: CallbackQuery,
+    db: Storage,
+) -> None:
+    await callback.answer()
+
+    likes = await db.get_likes(
+        callback.from_user.id
+    )
+
+    if not likes:
+        await callback.message.answer(
+            "❤️ <b>Пока тебе никто не поставил лайк.</b>\n\n"
+            "Продолжай знакомиться — всё впереди!",
+            reply_markup=main_menu(),
+        )
+        return
+
+    await callback.message.answer(
+        f"❤️ <b>Тебе поставили лайк:</b> "
+        f"{len(likes)}"
+    )
+
+    for profile in likes[:20]:
+        data = dict(profile)
+
+        text = profile_text(data)
+
+        username = await db.get_username(
+            data["user_id"]
+        )
+
+        buttons = []
+
+        if username:
+            buttons.append(
+                [
+                    InlineKeyboardButton(
+                        text="💬 Написать",
+                        url=f"https://t.me/{username}",
+                    )
+                ]
+            )
+
+        keyboard = (
+            InlineKeyboardMarkup(
+                inline_keyboard=buttons
+            )
+            if buttons
+            else None
+        )
+
+        if data.get("photo_file_id"):
+            await callback.message.answer_photo(
+                photo=data["photo_file_id"],
+                caption=text,
+                reply_markup=keyboard,
+            )
+        else:
+            await callback.message.answer(
+                text,
+                reply_markup=keyboard,
+            )
 
 
 @router.callback_query(
