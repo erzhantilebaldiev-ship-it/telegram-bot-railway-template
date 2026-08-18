@@ -2,17 +2,12 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timedelta, timezone
-from typing import Any, Protocol
+from typing import Protocol
 
 import asyncpg
 
-
 logger = logging.getLogger(__name__)
 
-
-# ============================================================
-# DATABASE SCHEMA
-# ============================================================
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS bot_users (
@@ -22,7 +17,6 @@ CREATE TABLE IF NOT EXISTS bot_users (
     last_seen TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
-
 CREATE TABLE IF NOT EXISTS meetups (
     meetup_id BIGSERIAL PRIMARY KEY,
 
@@ -31,36 +25,27 @@ CREATE TABLE IF NOT EXISTS meetups (
         ON DELETE CASCADE,
 
     title TEXT NOT NULL,
-
     place TEXT NOT NULL,
 
     starts_at TIMESTAMPTZ NOT NULL,
-
     ends_at TIMESTAMPTZ NOT NULL,
-
     cleanup_at TIMESTAMPTZ NOT NULL,
 
     description TEXT NOT NULL DEFAULT '',
 
     max_participants INTEGER NOT NULL
-        CHECK (
-            max_participants >= 1
-            AND max_participants <= 100
-        ),
+        CHECK (max_participants >= 1 AND max_participants <= 100),
 
     telegram_chat_id BIGINT,
 
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
 
     active BOOLEAN NOT NULL DEFAULT TRUE,
-
     cleaned BOOLEAN NOT NULL DEFAULT FALSE,
 
     CHECK (ends_at > starts_at),
-
     CHECK (cleanup_at > ends_at)
 );
-
 
 CREATE TABLE IF NOT EXISTS meetup_participants (
     meetup_id BIGINT NOT NULL
@@ -76,43 +61,35 @@ CREATE TABLE IF NOT EXISTS meetup_participants (
     PRIMARY KEY (meetup_id, user_id)
 );
 
+CREATE TABLE IF NOT EXISTS meetup_groups (
+    chat_id BIGINT PRIMARY KEY,
 
-CREATE INDEX IF NOT EXISTS idx_meetups_creator
-ON meetups(creator_id);
+    title TEXT,
 
+    meetup_id BIGINT
+        REFERENCES meetups(meetup_id)
+        ON DELETE SET NULL,
 
-CREATE INDEX IF NOT EXISTS idx_meetups_starts_at
-ON meetups(starts_at);
+    active BOOLEAN NOT NULL DEFAULT TRUE,
 
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
 
-CREATE INDEX IF NOT EXISTS idx_meetups_ends_at
-ON meetups(ends_at);
-
-
-CREATE INDEX IF NOT EXISTS idx_meetups_cleanup_at
+CREATE INDEX IF NOT EXISTS idx_meetups_cleanup
 ON meetups(cleanup_at);
-
 
 CREATE INDEX IF NOT EXISTS idx_meetups_active
 ON meetups(active);
 
+CREATE INDEX IF NOT EXISTS idx_participants_meetup
+ON meetup_participants(meetup_id);
 
-CREATE INDEX IF NOT EXISTS idx_meetups_telegram_chat
-ON meetups(telegram_chat_id);
-
-
-CREATE INDEX IF NOT EXISTS idx_meetup_participants_user
-ON meetup_participants(user_id);
+CREATE INDEX IF NOT EXISTS idx_groups_meetup
+ON meetup_groups(meetup_id);
 """
 
 
-# ============================================================
-# STORAGE INTERFACE
-# ============================================================
-
-
 class Storage(Protocol):
-
     @property
     def backend(self) -> str:
         ...
@@ -139,23 +116,16 @@ class Storage(Protocol):
         ends_at: datetime,
         description: str,
         max_participants: int,
-        telegram_chat_id: int | None = None,
     ) -> int:
         ...
 
-    async def get_meetup(
-        self,
-        meetup_id: int,
-    ):
+    async def get_meetup(self, meetup_id: int):
         ...
 
     async def get_active_meetups(self):
         ...
 
-    async def get_my_meetups(
-        self,
-        user_id: int,
-    ):
+    async def get_my_meetups(self, user_id: int):
         ...
 
     async def join_meetup(
@@ -172,12 +142,6 @@ class Storage(Protocol):
     ) -> bool:
         ...
 
-    async def get_participants(
-        self,
-        meetup_id: int,
-    ):
-        ...
-
     async def is_participant(
         self,
         meetup_id: int,
@@ -185,523 +149,56 @@ class Storage(Protocol):
     ) -> bool:
         ...
 
-    async def participant_count(
-        self,
-        meetup_id: int,
-    ) -> int:
+    async def get_participants(self, meetup_id: int):
         ...
 
-    async def set_telegram_chat_id(
-        self,
-        meetup_id: int,
-        chat_id: int,
-    ) -> bool:
-        ...
-
-    async def get_meetup_by_chat_id(
-        self,
-        chat_id: int,
-    ):
+    async def participant_count(self, meetup_id: int) -> int:
         ...
 
     async def get_meetups_ready_for_cleanup(self):
         ...
 
-    async def mark_meetup_cleaned(
-        self,
-        meetup_id: int,
-    ) -> bool:
+    async def mark_meetup_cleaned(self, meetup_id: int) -> bool:
         ...
 
     async def cleanup_finished_meetups(self) -> int:
         ...
 
-    async def user_count(self) -> int:
+    async def register_group(
+        self,
+        chat_id: int,
+        title: str | None = None,
+    ) -> None:
         ...
 
+    async def get_free_group(self):
+        ...
 
-# ============================================================
-# MEMORY STORAGE
-# ============================================================
-
-
-class MemoryStorage:
-
-    def __init__(self) -> None:
-        self._users: dict[int, str | None] = {}
-
-        self._meetups: dict[int, dict[str, Any]] = {}
-
-        self._participants: dict[int, set[int]] = {}
-
-        self._next_meetup_id = 1
-
-    @property
-    def backend(self) -> str:
-        return "memory"
-
-    async def open(self) -> None:
-        logger.info(
-            "storage.open backend=memory"
-        )
-
-    async def close(self) -> None:
-        return None
-
-    # ========================================================
-    # USERS
-    # ========================================================
-
-    async def track_user(
-        self,
-        user_id: int,
-        username: str | None,
-    ) -> None:
-
-        self._users[user_id] = username
-
-    # ========================================================
-    # CREATE MEETUP
-    # ========================================================
-
-    async def create_meetup(
-        self,
-        creator_id: int,
-        title: str,
-        place: str,
-        starts_at: datetime,
-        ends_at: datetime,
-        description: str,
-        max_participants: int,
-        telegram_chat_id: int | None = None,
-    ) -> int:
-
-        if ends_at <= starts_at:
-            raise ValueError(
-                "ends_at must be after starts_at"
-            )
-
-        if not 1 <= max_participants <= 100:
-            raise ValueError(
-                "max_participants must be between 1 and 100"
-            )
-
-        cleanup_at = (
-            ends_at + timedelta(hours=24)
-        )
-
-        meetup_id = self._next_meetup_id
-
-        self._next_meetup_id += 1
-
-        self._meetups[meetup_id] = {
-            "meetup_id": meetup_id,
-            "creator_id": creator_id,
-            "title": title,
-            "place": place,
-            "starts_at": starts_at,
-            "ends_at": ends_at,
-            "cleanup_at": cleanup_at,
-            "description": description,
-            "max_participants": max_participants,
-            "telegram_chat_id": telegram_chat_id,
-            "created_at": datetime.now(timezone.utc),
-            "active": True,
-            "cleaned": False,
-        }
-
-        self._participants[meetup_id] = set()
-
-        return meetup_id
-
-    # ========================================================
-    # GET MEETUP
-    # ========================================================
-
-    async def get_meetup(
-        self,
-        meetup_id: int,
-    ):
-
-        meetup = self._meetups.get(meetup_id)
-
-        if not meetup:
-            return None
-
-        if meetup["cleaned"]:
-            return None
-
-        data = dict(meetup)
-
-        data["participant_count"] = len(
-            self._participants.get(
-                meetup_id,
-                set(),
-            )
-        )
-
-        return data
-
-    # ========================================================
-    # ACTIVE MEETUPS
-    # ========================================================
-
-    async def get_active_meetups(self):
-
-        now = datetime.now(timezone.utc)
-
-        result = []
-
-        for meetup in self._meetups.values():
-
-            if not meetup["active"]:
-                continue
-
-            if meetup["cleaned"]:
-                continue
-
-            if meetup["cleanup_at"] <= now:
-                continue
-
-            data = dict(meetup)
-
-            data["participant_count"] = len(
-                self._participants.get(
-                    meetup["meetup_id"],
-                    set(),
-                )
-            )
-
-            result.append(data)
-
-        result.sort(
-            key=lambda item: item["starts_at"]
-        )
-
-        return result
-
-    # ========================================================
-    # MY MEETUPS
-    # ========================================================
-
-    async def get_my_meetups(
-        self,
-        user_id: int,
-    ):
-
-        result = []
-
-        for meetup_id, meetup in self._meetups.items():
-
-            if meetup["cleaned"]:
-                continue
-
-            participants = self._participants.get(
-                meetup_id,
-                set(),
-            )
-
-            if user_id not in participants:
-                continue
-
-            data = dict(meetup)
-
-            data["participant_count"] = len(
-                participants
-            )
-
-            result.append(data)
-
-        result.sort(
-            key=lambda item: item["starts_at"]
-        )
-
-        return result
-
-    # ========================================================
-    # JOIN
-    # ========================================================
-
-    async def join_meetup(
-        self,
-        meetup_id: int,
-        user_id: int,
-    ) -> tuple[bool, str]:
-
-        meetup = self._meetups.get(meetup_id)
-
-        if not meetup:
-            return False, "not_found"
-
-        if meetup["cleaned"]:
-            return False, "closed"
-
-        if not meetup["active"]:
-            return False, "closed"
-
-        now = datetime.now(timezone.utc)
-
-        if meetup["cleanup_at"] <= now:
-            return False, "expired"
-
-        participants = self._participants.setdefault(
-            meetup_id,
-            set(),
-        )
-
-        if user_id in participants:
-            return False, "already_joined"
-
-        if len(participants) >= meetup["max_participants"]:
-            return False, "full"
-
-        participants.add(user_id)
-
-        return True, "joined"
-
-    # ========================================================
-    # LEAVE
-    # ========================================================
-
-    async def leave_meetup(
-        self,
-        meetup_id: int,
-        user_id: int,
-    ) -> bool:
-
-        participants = self._participants.get(
-            meetup_id
-        )
-
-        if not participants:
-            return False
-
-        if user_id not in participants:
-            return False
-
-        participants.remove(user_id)
-
-        return True
-
-    # ========================================================
-    # PARTICIPANTS
-    # ========================================================
-
-    async def get_participants(
-        self,
-        meetup_id: int,
-    ):
-
-        meetup = self._meetups.get(meetup_id)
-
-        if not meetup:
-            return []
-
-        participants = self._participants.get(
-            meetup_id,
-            set(),
-        )
-
-        result = []
-
-        for user_id in participants:
-
-            result.append(
-                {
-                    "user_id": user_id,
-                    "username": self._users.get(user_id),
-                }
-            )
-
-        return result
-
-    # ========================================================
-    # IS PARTICIPANT
-    # ========================================================
-
-    async def is_participant(
-        self,
-        meetup_id: int,
-        user_id: int,
-    ) -> bool:
-
-        return user_id in self._participants.get(
-            meetup_id,
-            set(),
-        )
-
-    # ========================================================
-    # PARTICIPANT COUNT
-    # ========================================================
-
-    async def participant_count(
-        self,
-        meetup_id: int,
-    ) -> int:
-
-        return len(
-            self._participants.get(
-                meetup_id,
-                set(),
-            )
-        )
-
-    # ========================================================
-    # TELEGRAM CHAT
-    # ========================================================
-
-    async def set_telegram_chat_id(
+    async def assign_group(
         self,
         meetup_id: int,
         chat_id: int,
     ) -> bool:
+        ...
 
-        meetup = self._meetups.get(meetup_id)
+    async def get_meetup_by_chat_id(self, chat_id: int):
+        ...
 
-        if not meetup:
-            return False
-
-        meetup["telegram_chat_id"] = chat_id
-
-        return True
-
-    async def get_meetup_by_chat_id(
-        self,
-        chat_id: int,
-    ):
-
-        for meetup in self._meetups.values():
-
-            if meetup["telegram_chat_id"] == chat_id:
-
-                data = dict(meetup)
-
-                data["participant_count"] = len(
-                    self._participants.get(
-                        meetup["meetup_id"],
-                        set(),
-                    )
-                )
-
-                return data
-
-        return None
-
-    # ========================================================
-    # READY FOR CLEANUP
-    # ========================================================
-
-    async def get_meetups_ready_for_cleanup(
-        self,
-    ):
-
-        now = datetime.now(timezone.utc)
-
-        result = []
-
-        for meetup in self._meetups.values():
-
-            if meetup["cleaned"]:
-                continue
-
-            if meetup["cleanup_at"] <= now:
-
-                data = dict(meetup)
-
-                data["participant_count"] = len(
-                    self._participants.get(
-                        meetup["meetup_id"],
-                        set(),
-                    )
-                )
-
-                result.append(data)
-
-        return result
-
-    # ========================================================
-    # MARK CLEANED
-    # ========================================================
-
-    async def mark_meetup_cleaned(
-        self,
-        meetup_id: int,
-    ) -> bool:
-
-        meetup = self._meetups.get(meetup_id)
-
-        if not meetup:
-            return False
-
-        meetup["active"] = False
-        meetup["cleaned"] = True
-
-        self._participants[meetup_id] = set()
-
-        return True
-
-    # ========================================================
-    # CLEANUP
-    # ========================================================
-
-    async def cleanup_finished_meetups(
-        self,
-    ) -> int:
-
-        meetups = (
-            await self.get_meetups_ready_for_cleanup()
-        )
-
-        cleaned = 0
-
-        for meetup in meetups:
-
-            meetup_id = meetup["meetup_id"]
-
-            success = await self.mark_meetup_cleaned(
-                meetup_id
-            )
-
-            if success:
-                cleaned += 1
-
-        return cleaned
-
-    # ========================================================
-    # USER COUNT
-    # ========================================================
-
-    async def user_count(self) -> int:
-
-        return len(self._users)
-
-
-# ============================================================
-# POSTGRES STORAGE
-# ============================================================
+    async def get_group_chat_id(self, meetup_id: int):
+        ...
 
 
 class PostgresStorage:
 
-    def __init__(
-        self,
-        dsn: str,
-    ) -> None:
-
+    def __init__(self, dsn: str) -> None:
         self._dsn = dsn
-
         self._pool: asyncpg.Pool | None = None
 
     @property
     def backend(self) -> str:
         return "postgres"
 
-    # ========================================================
-    # OPEN
-    # ========================================================
-
     async def open(self) -> None:
-
         self._pool = await asyncpg.create_pool(
             self._dsn,
             min_size=1,
@@ -709,85 +206,25 @@ class PostgresStorage:
         )
 
         async with self._pool.acquire() as conn:
-
             await conn.execute(_SCHEMA)
 
-            # ------------------------------------------------
-            # Миграции для существующей базы
-            # ------------------------------------------------
-
-            await conn.execute(
-                """
-                ALTER TABLE meetups
-                ADD COLUMN IF NOT EXISTS ends_at
-                TIMESTAMPTZ
-                """
-            )
-
-            await conn.execute(
-                """
-                ALTER TABLE meetups
-                ADD COLUMN IF NOT EXISTS cleanup_at
-                TIMESTAMPTZ
-                """
-            )
-
-            await conn.execute(
-                """
-                ALTER TABLE meetups
-                ADD COLUMN IF NOT EXISTS telegram_chat_id
-                BIGINT
-                """
-            )
-
-            await conn.execute(
-                """
-                ALTER TABLE meetups
-                ADD COLUMN IF NOT EXISTS cleaned
-                BOOLEAN NOT NULL DEFAULT FALSE
-                """
-            )
-
-            await conn.execute(
-                """
-                ALTER TABLE meetups
-                ADD COLUMN IF NOT EXISTS active
-                BOOLEAN NOT NULL DEFAULT TRUE
-                """
-            )
-
-        logger.info(
-            "storage.open backend=postgres"
-        )
-
-    # ========================================================
-    # CLOSE
-    # ========================================================
+        logger.info("PostgreSQL storage opened")
 
     async def close(self) -> None:
-
-        if self._pool is not None:
-
+        if self._pool:
             await self._pool.close()
-
             self._pool = None
-
-    # ========================================================
-    # USERS
-    # ========================================================
 
     async def track_user(
         self,
         user_id: int,
         username: str | None,
     ) -> None:
-
         assert self._pool is not None
 
         await self._pool.execute(
             """
-            INSERT INTO bot_users
-            (
+            INSERT INTO bot_users (
                 user_id,
                 username
             )
@@ -801,10 +238,6 @@ class PostgresStorage:
             username,
         )
 
-    # ========================================================
-    # CREATE MEETUP
-    # ========================================================
-
     async def create_meetup(
         self,
         creator_id: int,
@@ -814,31 +247,15 @@ class PostgresStorage:
         ends_at: datetime,
         description: str,
         max_participants: int,
-        telegram_chat_id: int | None = None,
     ) -> int:
-
         assert self._pool is not None
 
-        if ends_at <= starts_at:
-            raise ValueError(
-                "ends_at must be after starts_at"
-            )
-
-        if not 1 <= max_participants <= 100:
-            raise ValueError(
-                "max_participants must be between 1 and 100"
-            )
-
-        cleanup_at = (
-            ends_at + timedelta(hours=24)
-        )
+        cleanup_at = ends_at + timedelta(hours=24)
 
         async with self._pool.acquire() as conn:
-
             meetup_id = await conn.fetchval(
                 """
-                INSERT INTO meetups
-                (
+                INSERT INTO meetups (
                     creator_id,
                     title,
                     place,
@@ -846,20 +263,10 @@ class PostgresStorage:
                     ends_at,
                     cleanup_at,
                     description,
-                    max_participants,
-                    telegram_chat_id
+                    max_participants
                 )
-                VALUES
-                (
-                    $1,
-                    $2,
-                    $3,
-                    $4,
-                    $5,
-                    $6,
-                    $7,
-                    $8,
-                    $9
+                VALUES (
+                    $1,$2,$3,$4,$5,$6,$7,$8
                 )
                 RETURNING meetup_id
                 """,
@@ -871,28 +278,18 @@ class PostgresStorage:
                 cleanup_at,
                 description,
                 max_participants,
-                telegram_chat_id,
             )
 
         return int(meetup_id)
 
-    # ========================================================
-    # GET MEETUP
-    # ========================================================
-
-    async def get_meetup(
-        self,
-        meetup_id: int,
-    ):
-
+    async def get_meetup(self, meetup_id: int):
         assert self._pool is not None
 
         return await self._pool.fetchrow(
             """
             SELECT
                 m.*,
-                COUNT(mp.user_id)::int
-                    AS participant_count
+                COUNT(mp.user_id)::int AS participant_count
             FROM meetups m
             LEFT JOIN meetup_participants mp
                 ON mp.meetup_id = m.meetup_id
@@ -903,20 +300,14 @@ class PostgresStorage:
             meetup_id,
         )
 
-    # ========================================================
-    # ACTIVE MEETUPS
-    # ========================================================
-
     async def get_active_meetups(self):
-
         assert self._pool is not None
 
         return await self._pool.fetch(
             """
             SELECT
                 m.*,
-                COUNT(mp.user_id)::int
-                    AS participant_count
+                COUNT(mp.user_id)::int AS participant_count
             FROM meetups m
             LEFT JOIN meetup_participants mp
                 ON mp.meetup_id = m.meetup_id
@@ -924,58 +315,43 @@ class PostgresStorage:
               AND m.cleaned = FALSE
               AND m.cleanup_at > now()
             GROUP BY m.meetup_id
-            ORDER BY m.starts_at ASC
+            ORDER BY m.starts_at
             """
         )
-
-    # ========================================================
-    # MY MEETUPS
-    # ========================================================
 
     async def get_my_meetups(
         self,
         user_id: int,
     ):
-
         assert self._pool is not None
 
         return await self._pool.fetch(
             """
             SELECT
                 m.*,
-                COUNT(mp2.user_id)::int
-                    AS participant_count
+                COUNT(mp2.user_id)::int AS participant_count
             FROM meetups m
+            JOIN meetup_participants mp
+                ON mp.meetup_id = m.meetup_id
+               AND mp.user_id = $1
             LEFT JOIN meetup_participants mp2
                 ON mp2.meetup_id = m.meetup_id
             WHERE m.active = TRUE
               AND m.cleaned = FALSE
-              AND EXISTS (
-                  SELECT 1
-                  FROM meetup_participants mp
-                  WHERE mp.meetup_id = m.meetup_id
-                    AND mp.user_id = $1
-              )
             GROUP BY m.meetup_id
-            ORDER BY m.starts_at ASC
+            ORDER BY m.starts_at
             """,
             user_id,
         )
-
-    # ========================================================
-    # JOIN
-    # ========================================================
 
     async def join_meetup(
         self,
         meetup_id: int,
         user_id: int,
     ) -> tuple[bool, str]:
-
         assert self._pool is not None
 
         async with self._pool.acquire() as conn:
-
             async with conn.transaction():
 
                 meetup = await conn.fetchrow(
@@ -1028,12 +404,11 @@ class PostgresStorage:
 
                 await conn.execute(
                     """
-                    INSERT INTO meetup_participants
-                    (
+                    INSERT INTO meetup_participants (
                         meetup_id,
                         user_id
                     )
-                    VALUES ($1, $2)
+                    VALUES ($1,$2)
                     """,
                     meetup_id,
                     user_id,
@@ -1041,16 +416,11 @@ class PostgresStorage:
 
         return True, "joined"
 
-    # ========================================================
-    # LEAVE
-    # ========================================================
-
     async def leave_meetup(
         self,
         meetup_id: int,
         user_id: int,
     ) -> bool:
-
         assert self._pool is not None
 
         result = await self._pool.execute(
@@ -1065,15 +435,32 @@ class PostgresStorage:
 
         return result.endswith("1")
 
-    # ========================================================
-    # PARTICIPANTS
-    # ========================================================
+    async def is_participant(
+        self,
+        meetup_id: int,
+        user_id: int,
+    ) -> bool:
+        assert self._pool is not None
+
+        result = await self._pool.fetchval(
+            """
+            SELECT EXISTS (
+                SELECT 1
+                FROM meetup_participants
+                WHERE meetup_id = $1
+                  AND user_id = $2
+            )
+            """,
+            meetup_id,
+            user_id,
+        )
+
+        return bool(result)
 
     async def get_participants(
         self,
         meetup_id: int,
     ):
-
         assert self._pool is not None
 
         return await self._pool.fetch(
@@ -1086,50 +473,18 @@ class PostgresStorage:
             JOIN bot_users u
                 ON u.user_id = mp.user_id
             WHERE mp.meetup_id = $1
-            ORDER BY mp.joined_at ASC
+            ORDER BY mp.joined_at
             """,
             meetup_id,
         )
-
-    # ========================================================
-    # IS PARTICIPANT
-    # ========================================================
-
-    async def is_participant(
-        self,
-        meetup_id: int,
-        user_id: int,
-    ) -> bool:
-
-        assert self._pool is not None
-
-        return bool(
-            await self._pool.fetchval(
-                """
-                SELECT EXISTS (
-                    SELECT 1
-                    FROM meetup_participants
-                    WHERE meetup_id = $1
-                      AND user_id = $2
-                )
-                """,
-                meetup_id,
-                user_id,
-            )
-        )
-
-    # ========================================================
-    # PARTICIPANT COUNT
-    # ========================================================
 
     async def participant_count(
         self,
         meetup_id: int,
     ) -> int:
-
         assert self._pool is not None
 
-        count = await self._pool.fetchval(
+        result = await self._pool.fetchval(
             """
             SELECT COUNT(*)
             FROM meetup_participants
@@ -1138,57 +493,9 @@ class PostgresStorage:
             meetup_id,
         )
 
-        return int(count or 0)
+        return int(result or 0)
 
-    # ========================================================
-    # TELEGRAM CHAT
-    # ========================================================
-
-    async def set_telegram_chat_id(
-        self,
-        meetup_id: int,
-        chat_id: int,
-    ) -> bool:
-
-        assert self._pool is not None
-
-        result = await self._pool.execute(
-            """
-            UPDATE meetups
-            SET telegram_chat_id = $2
-            WHERE meetup_id = $1
-            """,
-            meetup_id,
-            chat_id,
-        )
-
-        return result.endswith("1")
-
-    async def get_meetup_by_chat_id(
-        self,
-        chat_id: int,
-    ):
-
-        assert self._pool is not None
-
-        return await self._pool.fetchrow(
-            """
-            SELECT *
-            FROM meetups
-            WHERE telegram_chat_id = $1
-              AND cleaned = FALSE
-            """,
-            chat_id,
-        )
-
-    # ========================================================
-    # READY FOR CLEANUP
-    # ========================================================
-
-    async def get_meetups_ready_for_cleanup(
-        self,
-    ):
-
+    async def get_meetups_ready_for_cleanup(self):
         assert self._pool is not None
 
         return await self._pool.fetch(
@@ -1197,28 +504,45 @@ class PostgresStorage:
             FROM meetups
             WHERE cleaned = FALSE
               AND cleanup_at <= now()
-            ORDER BY cleanup_at ASC
+            ORDER BY cleanup_at
             """
         )
-
-    # ========================================================
-    # MARK CLEANED
-    # ========================================================
 
     async def mark_meetup_cleaned(
         self,
         meetup_id: int,
     ) -> bool:
-
         assert self._pool is not None
 
         async with self._pool.acquire() as conn:
-
             async with conn.transaction():
+
+                meetup = await conn.fetchrow(
+                    """
+                    SELECT telegram_chat_id
+                    FROM meetups
+                    WHERE meetup_id = $1
+                      AND cleaned = FALSE
+                    FOR UPDATE
+                    """,
+                    meetup_id,
+                )
+
+                if not meetup:
+                    return False
 
                 await conn.execute(
                     """
                     DELETE FROM meetup_participants
+                    WHERE meetup_id = $1
+                    """,
+                    meetup_id,
+                )
+
+                await conn.execute(
+                    """
+                    UPDATE meetup_groups
+                    SET meetup_id = NULL
                     WHERE meetup_id = $1
                     """,
                     meetup_id,
@@ -1238,70 +562,149 @@ class PostgresStorage:
 
         return result.endswith("1")
 
-    # ========================================================
-    # CLEANUP
-    # ========================================================
-
-    async def cleanup_finished_meetups(
-        self,
-    ) -> int:
-
-        meetups = (
-            await self.get_meetups_ready_for_cleanup()
-        )
+    async def cleanup_finished_meetups(self) -> int:
+        meetups = await self.get_meetups_ready_for_cleanup()
 
         cleaned = 0
 
         for meetup in meetups:
-
-            meetup_id = meetup["meetup_id"]
-
-            success = (
-                await self.mark_meetup_cleaned(
-                    meetup_id
-                )
-            )
-
-            if success:
+            if await self.mark_meetup_cleaned(
+                meetup["meetup_id"]
+            ):
                 cleaned += 1
 
         return cleaned
 
-    # ========================================================
-    # USER COUNT
-    # ========================================================
+    # --------------------------------------------------
+    # ПОСТОЯННЫЕ TELEGRAM-ГРУППЫ
+    # --------------------------------------------------
 
-    async def user_count(self) -> int:
-
+    async def register_group(
+        self,
+        chat_id: int,
+        title: str | None = None,
+    ) -> None:
         assert self._pool is not None
 
-        count = await self._pool.fetchval(
+        await self._pool.execute(
             """
-            SELECT COUNT(*)
-            FROM bot_users
+            INSERT INTO meetup_groups (
+                chat_id,
+                title
+            )
+            VALUES ($1,$2)
+            ON CONFLICT (chat_id)
+            DO UPDATE SET
+                title = EXCLUDED.title
+            """,
+            chat_id,
+            title,
+        )
+
+    async def get_free_group(self):
+        assert self._pool is not None
+
+        return await self._pool.fetchrow(
+            """
+            SELECT *
+            FROM meetup_groups
+            WHERE active = TRUE
+              AND meetup_id IS NULL
+            ORDER BY created_at
+            LIMIT 1
             """
         )
 
-        return int(count or 0)
+    async def assign_group(
+        self,
+        meetup_id: int,
+        chat_id: int,
+    ) -> bool:
+        assert self._pool is not None
 
+        async with self._pool.acquire() as conn:
+            async with conn.transaction():
 
-# ============================================================
-# STORAGE FACTORY
-# ============================================================
+                group = await conn.fetchrow(
+                    """
+                    SELECT *
+                    FROM meetup_groups
+                    WHERE chat_id = $1
+                      AND active = TRUE
+                      AND meetup_id IS NULL
+                    FOR UPDATE
+                    """,
+                    chat_id,
+                )
+
+                if not group:
+                    return False
+
+                result = await conn.execute(
+                    """
+                    UPDATE meetup_groups
+                    SET meetup_id = $1
+                    WHERE chat_id = $2
+                      AND meetup_id IS NULL
+                    """,
+                    meetup_id,
+                    chat_id,
+                )
+
+                if not result.endswith("1"):
+                    return False
+
+                await conn.execute(
+                    """
+                    UPDATE meetups
+                    SET telegram_chat_id = $2
+                    WHERE meetup_id = $1
+                    """,
+                    meetup_id,
+                    chat_id,
+                )
+
+        return True
+
+    async def get_meetup_by_chat_id(
+        self,
+        chat_id: int,
+    ):
+        assert self._pool is not None
+
+        return await self._pool.fetchrow(
+            """
+            SELECT *
+            FROM meetups
+            WHERE telegram_chat_id = $1
+              AND cleaned = FALSE
+            """,
+            chat_id,
+        )
+
+    async def get_group_chat_id(
+        self,
+        meetup_id: int,
+    ):
+        assert self._pool is not None
+
+        return await self._pool.fetchval(
+            """
+            SELECT telegram_chat_id
+            FROM meetups
+            WHERE meetup_id = $1
+            """,
+            meetup_id,
+        )
 
 
 def create_storage(
     database_url: str | None,
 ) -> Storage:
-
     if database_url:
-        return PostgresStorage(
-            database_url
-        )
+        return PostgresStorage(database_url)
 
-    logger.warning(
-        "DATABASE_URL is not configured; "
-        "using temporary memory storage"
+    raise RuntimeError(
+        "DATABASE_URL is not configured. "
+        "PostgreSQL is required for meetup groups."
     )
-
-    return MemoryStorage()
