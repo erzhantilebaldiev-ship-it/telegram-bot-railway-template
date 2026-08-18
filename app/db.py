@@ -16,144 +16,184 @@ CREATE TABLE IF NOT EXISTS bot_users (
     last_seen TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
-CREATE TABLE IF NOT EXISTS profiles (
-    user_id BIGINT PRIMARY KEY REFERENCES bot_users(user_id) ON DELETE CASCADE,
-    name TEXT NOT NULL,
-    age INTEGER NOT NULL,
+CREATE TABLE IF NOT EXISTS meetups (
+    meetup_id BIGSERIAL PRIMARY KEY,
+    creator_id BIGINT NOT NULL
+        REFERENCES bot_users(user_id)
+        ON DELETE CASCADE,
+
+    title TEXT NOT NULL,
     city TEXT NOT NULL,
-    gender TEXT NOT NULL,
-    looking_for TEXT NOT NULL,
-    photo_file_id TEXT,
-    bio TEXT NOT NULL DEFAULT '',
+    place TEXT NOT NULL,
+    meetup_date DATE NOT NULL,
+    meetup_time TIME NOT NULL,
+
+    description TEXT NOT NULL DEFAULT '',
+    max_people INTEGER NOT NULL,
+
+    group_chat_id BIGINT,
+    group_message_id BIGINT,
+
+    status TEXT NOT NULL DEFAULT 'open',
+
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    ends_at TIMESTAMPTZ,
+    closed_at TIMESTAMPTZ
 );
 
-CREATE TABLE IF NOT EXISTS swipes (
-    user_id BIGINT NOT NULL REFERENCES bot_users(user_id) ON DELETE CASCADE,
-    target_id BIGINT NOT NULL REFERENCES bot_users(user_id) ON DELETE CASCADE,
-    action TEXT NOT NULL,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    PRIMARY KEY (user_id, target_id)
+CREATE TABLE IF NOT EXISTS meetup_members (
+    meetup_id BIGINT NOT NULL
+        REFERENCES meetups(meetup_id)
+        ON DELETE CASCADE,
+
+    user_id BIGINT NOT NULL
+        REFERENCES bot_users(user_id)
+        ON DELETE CASCADE,
+
+    joined_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+
+    PRIMARY KEY (meetup_id, user_id)
 );
 
-CREATE TABLE IF NOT EXISTS blocked_users (
-    user_id BIGINT NOT NULL REFERENCES bot_users(user_id) ON DELETE CASCADE,
-    blocked_id BIGINT NOT NULL REFERENCES bot_users(user_id) ON DELETE CASCADE,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    PRIMARY KEY (user_id, blocked_id)
-);
+CREATE INDEX IF NOT EXISTS idx_meetups_status
+ON meetups(status);
 
-CREATE TABLE IF NOT EXISTS dating_filters (
-    user_id BIGINT PRIMARY KEY REFERENCES bot_users(user_id) ON DELETE CASCADE,
-    min_age INTEGER NOT NULL DEFAULT 18,
-    max_age INTEGER NOT NULL DEFAULT 100,
-    city TEXT,
-    gender TEXT NOT NULL DEFAULT 'Неважно',
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
-);
+CREATE INDEX IF NOT EXISTS idx_meetups_date
+ON meetups(meetup_date);
 
-CREATE INDEX IF NOT EXISTS idx_swipes_user
-ON swipes(user_id);
+CREATE INDEX IF NOT EXISTS idx_meetup_members_meetup
+ON meetup_members(meetup_id);
 
-CREATE INDEX IF NOT EXISTS idx_swipes_target
-ON swipes(target_id);
-
-CREATE INDEX IF NOT EXISTS idx_profiles_age
-ON profiles(age);
-
-CREATE INDEX IF NOT EXISTS idx_profiles_city
-ON profiles(city);
+CREATE INDEX IF NOT EXISTS idx_meetup_members_user
+ON meetup_members(user_id);
 """
 
 
 class Storage(Protocol):
-    async def open(self) -> None: ...
-    async def close(self) -> None: ...
+
+    async def open(self) -> None:
+        ...
+
+    async def close(self) -> None:
+        ...
+
+    @property
+    def backend(self) -> str:
+        ...
 
     async def track_user(
         self,
         user_id: int,
         username: str | None,
-    ) -> None: ...
+    ) -> None:
+        ...
 
-    async def save_profile(
+    async def get_user(
         self,
         user_id: int,
-        name: str,
-        age: int,
+    ):
+        ...
+
+    async def create_meetup(
+        self,
+        creator_id: int,
+        title: str,
         city: str,
-        gender: str,
-        looking_for: str,
-        photo_file_id: str | None,
-        bio: str,
-    ) -> None: ...
+        place: str,
+        meetup_date,
+        meetup_time,
+        description: str,
+        max_people: int,
+        ends_at,
+    ) -> int:
+        ...
 
-    async def get_profile(self, user_id: int): ...
-
-    async def get_next_profile(self, user_id: int): ...
-
-    async def swipe(
+    async def get_meetup(
         self,
-        user_id: int,
-        target_id: int,
-        action: str,
-    ) -> bool: ...
+        meetup_id: int,
+    ):
+        ...
 
-    async def get_username(
+    async def get_open_meetups(
         self,
-        user_id: int,
-    ) -> str | None: ...
+        limit: int = 20,
+    ):
+        ...
 
-    async def get_likes(
+    async def get_my_meetups(
         self,
-        user_id: int,
-    ): ...
+        creator_id: int,
+        limit: int = 20,
+    ):
+        ...
 
-    async def delete_profile(
+    async def join_meetup(
         self,
+        meetup_id: int,
         user_id: int,
-    ) -> None: ...
+    ) -> bool:
+        ...
 
-    async def block_user(
+    async def leave_meetup(
         self,
+        meetup_id: int,
         user_id: int,
-        blocked_id: int,
-    ) -> None: ...
+    ) -> bool:
+        ...
 
-    async def save_filters(
+    async def is_member(
         self,
+        meetup_id: int,
         user_id: int,
-        min_age: int,
-        max_age: int,
-        city: str | None,
-        gender: str,
-    ) -> None: ...
+    ) -> bool:
+        ...
 
-    async def get_filters(
+    async def get_members(
         self,
-        user_id: int,
-    ): ...
+        meetup_id: int,
+    ):
+        ...
 
-    async def reset_filters(
+    async def get_member_count(
         self,
-        user_id: int,
-    ) -> None: ...
+        meetup_id: int,
+    ) -> int:
+        ...
 
-    async def user_count(self) -> int: ...
+    async def set_group(
+        self,
+        meetup_id: int,
+        group_chat_id: int,
+    ) -> None:
+        ...
 
-    @property
-    def backend(self) -> str: ...
+    async def close_meetup(
+        self,
+        meetup_id: int,
+    ) -> None:
+        ...
+
+    async def get_expired_meetups(self):
+        ...
+
+    async def remove_all_members(
+        self,
+        meetup_id: int,
+        creator_id: int,
+    ) -> None:
+        ...
+
+    async def user_count(self) -> int:
+        ...
 
 
 class MemoryStorage:
+
     def __init__(self) -> None:
         self._users: dict[int, str | None] = {}
-        self._profiles: dict[int, dict] = {}
-        self._swipes: dict[tuple[int, int], str] = {}
-        self._blocked: set[tuple[int, int]] = {}
-
-        self._filters: dict[int, dict] = {}
+        self._meetups: dict[int, dict] = {}
+        self._members: dict[int, set[int]] = {}
+        self._next_meetup_id = 1
 
     @property
     def backend(self) -> str:
@@ -172,198 +212,283 @@ class MemoryStorage:
     ) -> None:
         self._users[user_id] = username
 
-    async def save_profile(
+    async def get_user(
         self,
         user_id: int,
-        name: str,
-        age: int,
-        city: str,
-        gender: str,
-        looking_for: str,
-        photo_file_id: str | None,
-        bio: str,
-    ) -> None:
-        self._profiles[user_id] = {
-            "user_id": user_id,
-            "name": name,
-            "age": age,
-            "city": city,
-            "gender": gender,
-            "looking_for": looking_for,
-            "photo_file_id": photo_file_id,
-            "bio": bio,
-        }
-
-    async def get_profile(self, user_id: int):
-        return self._profiles.get(user_id)
-
-    async def save_filters(
-        self,
-        user_id: int,
-        min_age: int,
-        max_age: int,
-        city: str | None,
-        gender: str,
-    ) -> None:
-        self._filters[user_id] = {
-            "user_id": user_id,
-            "min_age": min_age,
-            "max_age": max_age,
-            "city": city,
-            "gender": gender,
-        }
-
-    async def get_filters(self, user_id: int):
-        return self._filters.get(
-            user_id,
-            {
-                "user_id": user_id,
-                "min_age": 18,
-                "max_age": 100,
-                "city": None,
-                "gender": "Неважно",
-            },
-        )
-
-    async def reset_filters(
-        self,
-        user_id: int,
-    ) -> None:
-        self._filters.pop(user_id, None)
-
-    async def get_next_profile(self, user_id: int):
-        me = self._profiles.get(user_id)
-
-        if not me:
+    ):
+        if user_id not in self._users:
             return None
 
-        filters = await self.get_filters(user_id)
+        return {
+            "user_id": user_id,
+            "username": self._users[user_id],
+        }
 
-        for target_id, profile in self._profiles.items():
+    async def create_meetup(
+        self,
+        creator_id: int,
+        title: str,
+        city: str,
+        place: str,
+        meetup_date,
+        meetup_time,
+        description: str,
+        max_people: int,
+        ends_at,
+    ) -> int:
 
-            if target_id == user_id:
+        meetup_id = self._next_meetup_id
+        self._next_meetup_id += 1
+
+        self._meetups[meetup_id] = {
+            "meetup_id": meetup_id,
+            "creator_id": creator_id,
+            "title": title,
+            "city": city,
+            "place": place,
+            "meetup_date": meetup_date,
+            "meetup_time": meetup_time,
+            "description": description,
+            "max_people": max_people,
+            "group_chat_id": None,
+            "status": "open",
+            "ends_at": ends_at,
+        }
+
+        self._members[meetup_id] = {
+            creator_id
+        }
+
+        return meetup_id
+
+    async def get_meetup(
+        self,
+        meetup_id: int,
+    ):
+        meetup = self._meetups.get(meetup_id)
+
+        if not meetup:
+            return None
+
+        data = dict(meetup)
+        data["member_count"] = len(
+            self._members.get(meetup_id, set())
+        )
+
+        return data
+
+    async def get_open_meetups(
+        self,
+        limit: int = 20,
+    ):
+        result = []
+
+        for meetup in self._meetups.values():
+
+            if meetup["status"] != "open":
                 continue
 
-            if (user_id, target_id) in self._blocked:
+            data = dict(meetup)
+
+            data["member_count"] = len(
+                self._members.get(
+                    meetup["meetup_id"],
+                    set(),
+                )
+            )
+
+            result.append(data)
+
+        result.sort(
+            key=lambda x: (
+                x["meetup_date"],
+                x["meetup_time"],
+            )
+        )
+
+        return result[:limit]
+
+    async def get_my_meetups(
+        self,
+        creator_id: int,
+        limit: int = 20,
+    ):
+        result = []
+
+        for meetup in self._meetups.values():
+
+            if meetup["creator_id"] != creator_id:
                 continue
 
-            if (target_id, user_id) in self._blocked:
-                continue
+            data = dict(meetup)
 
-            if (user_id, target_id) in self._swipes:
-                continue
+            data["member_count"] = len(
+                self._members.get(
+                    meetup["meetup_id"],
+                    set(),
+                )
+            )
 
-            if not (
-                filters["min_age"]
-                <= profile["age"]
-                <= filters["max_age"]
-            ):
-                continue
+            result.append(data)
 
-            if filters["city"]:
-                if profile["city"].lower() != filters["city"].lower():
-                    continue
+        result.sort(
+            key=lambda x: (
+                x["meetup_date"],
+                x["meetup_time"],
+            ),
+            reverse=True,
+        )
 
-            if filters["gender"] != "Неважно":
-                if profile["gender"] != filters["gender"]:
-                    continue
+        return result[:limit]
 
-            if not self._is_compatible(me, profile):
-                continue
-
-            return profile
-
-        return None
-
-    @staticmethod
-    def _is_compatible(
-        me: dict,
-        profile: dict,
+    async def join_meetup(
+        self,
+        meetup_id: int,
+        user_id: int,
     ) -> bool:
 
-        if (
-            profile["looking_for"] != "Неважно"
-            and profile["looking_for"] != me["gender"]
-        ):
+        meetup = self._meetups.get(
+            meetup_id
+        )
+
+        if not meetup:
             return False
 
-        if (
-            me["looking_for"] != "Неважно"
-            and me["looking_for"] != profile["gender"]
-        ):
+        if meetup["status"] != "open":
             return False
+
+        members = self._members.setdefault(
+            meetup_id,
+            set(),
+        )
+
+        if user_id in members:
+            return False
+
+        if len(members) >= meetup["max_people"]:
+            return False
+
+        members.add(user_id)
 
         return True
 
-    async def swipe(
+    async def leave_meetup(
         self,
+        meetup_id: int,
         user_id: int,
-        target_id: int,
-        action: str,
     ) -> bool:
-        self._swipes[(user_id, target_id)] = action
 
-        if action != "like":
-            return False
-
-        return (
-            self._swipes.get((target_id, user_id))
-            == "like"
+        meetup = self._meetups.get(
+            meetup_id
         )
 
-    async def get_username(
-        self,
-        user_id: int,
-    ) -> str | None:
-        return self._users.get(user_id)
+        if not meetup:
+            return False
 
-    async def get_likes(self, user_id: int):
+        if user_id == meetup["creator_id"]:
+            return False
+
+        members = self._members.get(
+            meetup_id,
+            set(),
+        )
+
+        if user_id not in members:
+            return False
+
+        members.remove(user_id)
+
+        return True
+
+    async def is_member(
+        self,
+        meetup_id: int,
+        user_id: int,
+    ) -> bool:
+
+        return user_id in self._members.get(
+            meetup_id,
+            set(),
+        )
+
+    async def get_members(
+        self,
+        meetup_id: int,
+    ):
         result = []
 
-        for (sender, target), action in self._swipes.items():
-            if target == user_id and action == "like":
-                profile = self._profiles.get(sender)
-
-                if profile:
-                    result.append(profile)
+        for user_id in self._members.get(
+            meetup_id,
+            set(),
+        ):
+            result.append(
+                {
+                    "user_id": user_id,
+                    "username": self._users.get(
+                        user_id
+                    ),
+                }
+            )
 
         return result
 
-    async def delete_profile(
+    async def get_member_count(
         self,
-        user_id: int,
-    ) -> None:
-        self._profiles.pop(user_id, None)
+        meetup_id: int,
+    ) -> int:
 
-        self._swipes = {
-            key: value
-            for key, value in self._swipes.items()
-            if user_id not in key
-        }
-
-        self._blocked = {
-            pair
-            for pair in self._blocked
-            if user_id not in pair
-        }
-
-        self._filters.pop(user_id, None)
-
-    async def block_user(
-        self,
-        user_id: int,
-        blocked_id: int,
-    ) -> None:
-        self._blocked.add(
-            (user_id, blocked_id)
+        return len(
+            self._members.get(
+                meetup_id,
+                set(),
+            )
         )
+
+    async def set_group(
+        self,
+        meetup_id: int,
+        group_chat_id: int,
+    ) -> None:
+
+        if meetup_id in self._meetups:
+            self._meetups[
+                meetup_id
+            ]["group_chat_id"] = group_chat_id
+
+    async def close_meetup(
+        self,
+        meetup_id: int,
+    ) -> None:
+
+        if meetup_id in self._meetups:
+            self._meetups[
+                meetup_id
+            ]["status"] = "closed"
+
+    async def get_expired_meetups(self):
+        return []
+
+    async def remove_all_members(
+        self,
+        meetup_id: int,
+        creator_id: int,
+    ) -> None:
+
+        self._members[meetup_id] = {
+            creator_id
+        }
 
     async def user_count(self) -> int:
         return len(self._users)
 
 
 class PostgresStorage:
-    def __init__(self, dsn: str) -> None:
+
+    def __init__(
+        self,
+        dsn: str,
+    ) -> None:
+
         self._dsn = dsn
         self._pool: asyncpg.Pool | None = None
 
@@ -372,6 +497,7 @@ class PostgresStorage:
         return "postgres"
 
     async def open(self) -> None:
+
         self._pool = await asyncpg.create_pool(
             self._dsn,
             min_size=1,
@@ -381,9 +507,12 @@ class PostgresStorage:
         async with self._pool.acquire() as conn:
             await conn.execute(_SCHEMA)
 
-        logger.info("storage.open backend=postgres")
+        logger.info(
+            "storage.open backend=postgres"
+        )
 
     async def close(self) -> None:
+
         if self._pool is not None:
             await self._pool.close()
 
@@ -392,6 +521,7 @@ class PostgresStorage:
         user_id: int,
         username: str | None,
     ) -> None:
+
         assert self._pool is not None
 
         await self._pool.execute(
@@ -399,6 +529,7 @@ class PostgresStorage:
             INSERT INTO bot_users
             (user_id, username)
             VALUES ($1, $2)
+
             ON CONFLICT (user_id)
             DO UPDATE SET
                 username = EXCLUDED.username,
@@ -408,391 +539,407 @@ class PostgresStorage:
             username,
         )
 
-    async def save_profile(
-        self,
-        user_id: int,
-        name: str,
-        age: int,
-        city: str,
-        gender: str,
-        looking_for: str,
-        photo_file_id: str | None,
-        bio: str,
-    ) -> None:
-        assert self._pool is not None
-
-        await self._pool.execute(
-            """
-            INSERT INTO profiles
-            (
-                user_id,
-                name,
-                age,
-                city,
-                gender,
-                looking_for,
-                photo_file_id,
-                bio
-            )
-            VALUES
-            ($1,$2,$3,$4,$5,$6,$7,$8)
-
-            ON CONFLICT (user_id)
-            DO UPDATE SET
-                name = EXCLUDED.name,
-                age = EXCLUDED.age,
-                city = EXCLUDED.city,
-                gender = EXCLUDED.gender,
-                looking_for = EXCLUDED.looking_for,
-                photo_file_id = EXCLUDED.photo_file_id,
-                bio = EXCLUDED.bio,
-                updated_at = now()
-            """,
-            user_id,
-            name,
-            age,
-            city,
-            gender,
-            looking_for,
-            photo_file_id,
-            bio,
-        )
-
-    async def get_profile(
+    async def get_user(
         self,
         user_id: int,
     ):
+
         assert self._pool is not None
 
         return await self._pool.fetchrow(
             """
-            SELECT *
-            FROM profiles
-            WHERE user_id = $1
-            """,
-            user_id,
-        )
-
-    async def save_filters(
-        self,
-        user_id: int,
-        min_age: int,
-        max_age: int,
-        city: str | None,
-        gender: str,
-    ) -> None:
-        assert self._pool is not None
-
-        await self._pool.execute(
-            """
-            INSERT INTO dating_filters
-            (
+            SELECT
                 user_id,
-                min_age,
-                max_age,
-                city,
-                gender
-            )
-            VALUES ($1,$2,$3,$4,$5)
-
-            ON CONFLICT (user_id)
-            DO UPDATE SET
-                min_age = EXCLUDED.min_age,
-                max_age = EXCLUDED.max_age,
-                city = EXCLUDED.city,
-                gender = EXCLUDED.gender,
-                updated_at = now()
-            """,
-            user_id,
-            min_age,
-            max_age,
-            city,
-            gender,
-        )
-
-    async def get_filters(
-        self,
-        user_id: int,
-    ):
-        assert self._pool is not None
-
-        result = await self._pool.fetchrow(
-            """
-            SELECT *
-            FROM dating_filters
-            WHERE user_id = $1
-            """,
-            user_id,
-        )
-
-        if result:
-            return result
-
-        await self.save_filters(
-            user_id=user_id,
-            min_age=18,
-            max_age=100,
-            city=None,
-            gender="Неважно",
-        )
-
-        return await self._pool.fetchrow(
-            """
-            SELECT *
-            FROM dating_filters
-            WHERE user_id = $1
-            """,
-            user_id,
-        )
-
-    async def reset_filters(
-        self,
-        user_id: int,
-    ) -> None:
-        assert self._pool is not None
-
-        await self._pool.execute(
-            """
-            DELETE FROM dating_filters
-            WHERE user_id = $1
-            """,
-            user_id,
-        )
-
-    async def get_next_profile(
-        self,
-        user_id: int,
-    ):
-        assert self._pool is not None
-
-        filters = await self.get_filters(user_id)
-
-        return await self._pool.fetchrow(
-            """
-            SELECT p.*
-            FROM profiles p
-            JOIN profiles me
-              ON me.user_id = $1
-
-            WHERE p.user_id != $1
-
-              AND p.age BETWEEN $2 AND $3
-
-              AND (
-                  $4::TEXT IS NULL
-                  OR LOWER(p.city) = LOWER($4)
-              )
-
-              AND (
-                  $5 = 'Неважно'
-                  OR p.gender = $5
-              )
-
-              AND NOT EXISTS (
-                  SELECT 1
-                  FROM swipes s
-                  WHERE s.user_id = $1
-                    AND s.target_id = p.user_id
-              )
-
-              AND NOT EXISTS (
-                  SELECT 1
-                  FROM blocked_users b
-                  WHERE
-                    (
-                        b.user_id = $1
-                        AND b.blocked_id = p.user_id
-                    )
-                    OR
-                    (
-                        b.user_id = p.user_id
-                        AND b.blocked_id = $1
-                    )
-              )
-
-              AND (
-                  p.looking_for = 'Неважно'
-                  OR
-                  (
-                      p.looking_for = 'Парней'
-                      AND me.gender = 'Парень'
-                  )
-                  OR
-                  (
-                      p.looking_for = 'Девушек'
-                      AND me.gender = 'Девушка'
-                  )
-              )
-
-              AND (
-                  me.looking_for = 'Неважно'
-                  OR
-                  (
-                      me.looking_for = 'Парней'
-                      AND p.gender = 'Парень'
-                  )
-                  OR
-                  (
-                      me.looking_for = 'Девушек'
-                      AND p.gender = 'Девушка'
-                  )
-              )
-
-            ORDER BY random()
-            LIMIT 1
-            """,
-            user_id,
-            filters["min_age"],
-            filters["max_age"],
-            filters["city"],
-            filters["gender"],
-        )
-
-    async def swipe(
-        self,
-        user_id: int,
-        target_id: int,
-        action: str,
-    ) -> bool:
-        assert self._pool is not None
-
-        await self._pool.execute(
-            """
-            INSERT INTO swipes
-            (user_id, target_id, action)
-            VALUES ($1,$2,$3)
-
-            ON CONFLICT (user_id,target_id)
-            DO UPDATE SET action = EXCLUDED.action
-            """,
-            user_id,
-            target_id,
-            action,
-        )
-
-        if action != "like":
-            return False
-
-        return bool(
-            await self._pool.fetchval(
-                """
-                SELECT EXISTS (
-                    SELECT 1
-                    FROM swipes
-                    WHERE user_id = $1
-                      AND target_id = $2
-                      AND action = 'like'
-                )
-                """,
-                target_id,
-                user_id,
-            )
-        )
-
-    async def get_username(
-        self,
-        user_id: int,
-    ) -> str | None:
-        assert self._pool is not None
-
-        return await self._pool.fetchval(
-            """
-            SELECT username
+                username
             FROM bot_users
             WHERE user_id = $1
             """,
             user_id,
         )
 
-    async def get_likes(
+    async def create_meetup(
         self,
-        user_id: int,
+        creator_id: int,
+        title: str,
+        city: str,
+        place: str,
+        meetup_date,
+        meetup_time,
+        description: str,
+        max_people: int,
+        ends_at,
+    ) -> int:
+
+        assert self._pool is not None
+
+        async with self._pool.acquire() as conn:
+
+            async with conn.transaction():
+
+                meetup_id = await conn.fetchval(
+                    """
+                    INSERT INTO meetups
+                    (
+                        creator_id,
+                        title,
+                        city,
+                        place,
+                        meetup_date,
+                        meetup_time,
+                        description,
+                        max_people,
+                        ends_at
+                    )
+                    VALUES
+                    (
+                        $1,$2,$3,$4,$5,
+                        $6,$7,$8,$9
+                    )
+                    RETURNING meetup_id
+                    """,
+                    creator_id,
+                    title,
+                    city,
+                    place,
+                    meetup_date,
+                    meetup_time,
+                    description,
+                    max_people,
+                    ends_at,
+                )
+
+                await conn.execute(
+                    """
+                    INSERT INTO meetup_members
+                    (
+                        meetup_id,
+                        user_id
+                    )
+                    VALUES ($1,$2)
+                    """,
+                    meetup_id,
+                    creator_id,
+                )
+
+                return int(meetup_id)
+
+    async def get_meetup(
+        self,
+        meetup_id: int,
     ):
+
+        assert self._pool is not None
+
+        return await self._pool.fetchrow(
+            """
+            SELECT
+                m.*,
+                COUNT(mm.user_id)::int
+                    AS member_count
+            FROM meetups m
+            LEFT JOIN meetup_members mm
+                ON mm.meetup_id = m.meetup_id
+            WHERE m.meetup_id = $1
+            GROUP BY m.meetup_id
+            """,
+            meetup_id,
+        )
+
+    async def get_open_meetups(
+        self,
+        limit: int = 20,
+    ):
+
         assert self._pool is not None
 
         return await self._pool.fetch(
             """
-            SELECT p.*
-            FROM swipes s
-            JOIN profiles p
-              ON p.user_id = s.user_id
-            WHERE s.target_id = $1
-              AND s.action = 'like'
-            ORDER BY s.created_at DESC
+            SELECT
+                m.*,
+                COUNT(mm.user_id)::int
+                    AS member_count
+            FROM meetups m
+            LEFT JOIN meetup_members mm
+                ON mm.meetup_id = m.meetup_id
+            WHERE m.status = 'open'
+            GROUP BY m.meetup_id
+            ORDER BY
+                m.meetup_date,
+                m.meetup_time
+            LIMIT $1
             """,
+            limit,
+        )
+
+    async def get_my_meetups(
+        self,
+        creator_id: int,
+        limit: int = 20,
+    ):
+
+        assert self._pool is not None
+
+        return await self._pool.fetch(
+            """
+            SELECT
+                m.*,
+                COUNT(mm.user_id)::int
+                    AS member_count
+            FROM meetups m
+            LEFT JOIN meetup_members mm
+                ON mm.meetup_id = m.meetup_id
+            WHERE m.creator_id = $1
+            GROUP BY m.meetup_id
+            ORDER BY m.created_at DESC
+            LIMIT $2
+            """,
+            creator_id,
+            limit,
+        )
+
+    async def join_meetup(
+        self,
+        meetup_id: int,
+        user_id: int,
+    ) -> bool:
+
+        assert self._pool is not None
+
+        async with self._pool.acquire() as conn:
+
+            async with conn.transaction():
+
+                meetup = await conn.fetchrow(
+                    """
+                    SELECT
+                        status,
+                        max_people
+                    FROM meetups
+                    WHERE meetup_id = $1
+                    FOR UPDATE
+                    """,
+                    meetup_id,
+                )
+
+                if not meetup:
+                    return False
+
+                if meetup["status"] != "open":
+                    return False
+
+                count = await conn.fetchval(
+                    """
+                    SELECT COUNT(*)
+                    FROM meetup_members
+                    WHERE meetup_id = $1
+                    """,
+                    meetup_id,
+                )
+
+                if count >= meetup["max_people"]:
+                    return False
+
+                result = await conn.execute(
+                    """
+                    INSERT INTO meetup_members
+                    (
+                        meetup_id,
+                        user_id
+                    )
+                    VALUES ($1,$2)
+                    ON CONFLICT DO NOTHING
+                    """,
+                    meetup_id,
+                    user_id,
+                )
+
+                return result == "INSERT 0 1"
+
+    async def leave_meetup(
+        self,
+        meetup_id: int,
+        user_id: int,
+    ) -> bool:
+
+        assert self._pool is not None
+
+        creator_id = await self._pool.fetchval(
+            """
+            SELECT creator_id
+            FROM meetups
+            WHERE meetup_id = $1
+            """,
+            meetup_id,
+        )
+
+        if creator_id == user_id:
+            return False
+
+        result = await self._pool.execute(
+            """
+            DELETE FROM meetup_members
+            WHERE meetup_id = $1
+              AND user_id = $2
+            """,
+            meetup_id,
             user_id,
         )
 
-    async def delete_profile(
+        return result == "DELETE 1"
+
+    async def is_member(
         self,
+        meetup_id: int,
         user_id: int,
+    ) -> bool:
+
+        assert self._pool is not None
+
+        return bool(
+            await self._pool.fetchval(
+                """
+                SELECT EXISTS (
+                    SELECT 1
+                    FROM meetup_members
+                    WHERE meetup_id = $1
+                      AND user_id = $2
+                )
+                """,
+                meetup_id,
+                user_id,
+            )
+        )
+
+    async def get_members(
+        self,
+        meetup_id: int,
+    ):
+
+        assert self._pool is not None
+
+        return await self._pool.fetch(
+            """
+            SELECT
+                u.user_id,
+                u.username,
+                mm.joined_at
+            FROM meetup_members mm
+            JOIN bot_users u
+                ON u.user_id = mm.user_id
+            WHERE mm.meetup_id = $1
+            ORDER BY mm.joined_at
+            """,
+            meetup_id,
+        )
+
+    async def get_member_count(
+        self,
+        meetup_id: int,
+    ) -> int:
+
+        assert self._pool is not None
+
+        return int(
+            await self._pool.fetchval(
+                """
+                SELECT COUNT(*)
+                FROM meetup_members
+                WHERE meetup_id = $1
+                """,
+                meetup_id,
+            )
+        )
+
+    async def set_group(
+        self,
+        meetup_id: int,
+        group_chat_id: int,
     ) -> None:
+
         assert self._pool is not None
 
         await self._pool.execute(
             """
-            DELETE FROM profiles
-            WHERE user_id = $1
+            UPDATE meetups
+            SET group_chat_id = $2
+            WHERE meetup_id = $1
             """,
-            user_id,
+            meetup_id,
+            group_chat_id,
         )
 
-        await self._pool.execute(
-            """
-            DELETE FROM swipes
-            WHERE user_id = $1
-               OR target_id = $1
-            """,
-            user_id,
-        )
-
-        await self._pool.execute(
-            """
-            DELETE FROM blocked_users
-            WHERE user_id = $1
-               OR blocked_id = $1
-            """,
-            user_id,
-        )
-
-        await self._pool.execute(
-            """
-            DELETE FROM dating_filters
-            WHERE user_id = $1
-            """,
-            user_id,
-        )
-
-    async def block_user(
+    async def close_meetup(
         self,
-        user_id: int,
-        blocked_id: int,
+        meetup_id: int,
     ) -> None:
+
         assert self._pool is not None
 
         await self._pool.execute(
             """
-            INSERT INTO blocked_users
-            (user_id, blocked_id)
-            VALUES ($1,$2)
-            ON CONFLICT DO NOTHING
+            UPDATE meetups
+            SET
+                status = 'closed',
+                closed_at = now()
+            WHERE meetup_id = $1
             """,
-            user_id,
-            blocked_id,
+            meetup_id,
+        )
+
+    async def get_expired_meetups(self):
+
+        assert self._pool is not None
+
+        return await self._pool.fetch(
+            """
+            SELECT *
+            FROM meetups
+            WHERE status = 'open'
+              AND ends_at IS NOT NULL
+              AND ends_at <= now()
+            ORDER BY ends_at
+            """
+        )
+
+    async def remove_all_members(
+        self,
+        meetup_id: int,
+        creator_id: int,
+    ) -> None:
+
+        assert self._pool is not None
+
+        await self._pool.execute(
+            """
+            DELETE FROM meetup_members
+            WHERE meetup_id = $1
+              AND user_id != $2
+            """,
+            meetup_id,
+            creator_id,
         )
 
     async def user_count(self) -> int:
+
         assert self._pool is not None
 
-        return await self._pool.fetchval(
-            "SELECT count(*) FROM bot_users"
+        return int(
+            await self._pool.fetchval(
+                """
+                SELECT COUNT(*)
+                FROM bot_users
+                """
+            )
         )
 
 
 def create_storage(
     database_url: str | None,
 ) -> Storage:
+
     if database_url:
-        return PostgresStorage(database_url)
+        return PostgresStorage(
+            database_url
+        )
 
     return MemoryStorage()
