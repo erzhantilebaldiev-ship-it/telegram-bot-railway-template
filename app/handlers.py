@@ -25,21 +25,22 @@ HELP_TEXT = (
 
 
 def main_menu() -> InlineKeyboardMarkup:
-    """Example inline keyboard. Callback data is namespaced as 'menu:<action>'."""
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
-                InlineKeyboardButton(text="ℹ️ Help", callback_data="menu:help"),
-                InlineKeyboardButton(text="📊 Stats", callback_data="menu:stats"),
+                InlineKeyboardButton(
+                    text="❤️ Создать анкету",
+                    callback_data="profile:create",
+                )
             ],
             [
                 InlineKeyboardButton(
-                    text="🚂 Deploy your own", url="https://railway.com/deploy"
+                    text="👤 Моя анкета",
+                    callback_data="profile:me",
                 )
             ],
         ]
     )
-
 
 @router.message(CommandStart())
 async def cmd_start(message: Message, db: Storage) -> None:
